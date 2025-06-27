@@ -1,0 +1,153 @@
+---
+title: "Define Specific Patient Groups in Hospital Database"
+author: "Thieu Nguyen"
+---
+
+### Introduction
+
+When performing data analysis in healthcare, we often need to define specific groups of patients, such as outpatients, inpatients, ICU-admitted patients (those admitted to intensive care units), and ventilated patients (those on mechanical ventilation).
+
+Therefore, it is important to know how to accurately define these patient groups. Here, I show some methods to do that.
+
+### Load necessary python packages and data
+
+```{python}
+import pandas as pd
+import numpy as np
+
+```
+
+```{python}
+# Ensure all columns are shown
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+
+```
+
+```{python}
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+
+```
+
+### Common patient groups
+
+#### Inpatient, outpatient
+
+These patients are defined in 'encounters'.ENCOUNTERCLASS
+
+```{python}
+encounters['ENCOUNTERCLASS'].value_counts()
+
+```
+
+'**wellness**': Preventive care visits, such as annual physicals, vaccinations, or routine screenings. These are typically scheduled in advance and not related to any acute illness.
+
+'**ambulatory**': Non-urgent care in outpatient settings where patients are not admitted to a hospital. Often includes visits to specialists or primary care physicians.
+
+'**outpatient**': Medical services provided without a hospital stay, such as minor procedures, diagnostic tests, or consultations. Sometimes overlaps with ambulatory.
+
+'**inpatient**': Hospital stays where the patient is formally admitted for one or more nights, often for surgeries, serious illnesses, or intensive treatment.
+
+'**emergency**': Visits to the emergency department (ER) for urgent or life-threatening conditions. Often unplanned.
+
+'**urgentcare**': Walk-in care for conditions that need prompt attention but are not emergencies, like minor injuries or infections. Less severe than ER visits.
+
+To find inpatients, we can filter encounters where ENCOUNTERCLASS is 'inpatient'.
+
+```{python}
+inpatient_ids = encounters[encounters['ENCOUNTERCLASS'] == 'inpatient'].PATIENT.unique()
+inpatients = patients[patients.Id.isin(inpatient_ids)]
+len(inpatient_ids)
+inpatients.head(3)
+
+```
+
+#### ICU-admitted patients
+
+To find patients who were admitted to the ICU, we can search for the encounter with the description "Admission to intensive care unit (procedure)".
+
+ICU-admitted patients belong to the inpatient group. So I search for DESCRIPTION, more detailed for the 'encounters'\[ENCOUNTERCLASS== 'inpatient'\], the reason for hospitalization.
+
+```{python}
+icu_patient_ids = encounters[encounters.DESCRIPTION == 'Admission to intensive care unit (procedure)'].PATIENT.unique()
+icu_patients = patients[patients.Id.isin(icu_patient_ids)]
+print(len(icu_patient_ids))
+icu_patients.head(3)
+
+```
+
+#### Ventilated patients
+
+To find ventilated patients, search for the procedure with code 26763009, which is "Mechanical ventilation (procedure)".
+
+```{python}
+vent_ids = procedures[procedures.CODE == 26763009].PATIENT.unique()
+vented_patients = patients[patients.Id.isin(vent_ids)]
+print(len(vent_ids))
+vented_patients.head(3)
+
+```
+
+#### Death patients
+
+To find patients who died, we can search for the patients with DEATHDATE exists.
+
+```{python}
+deceased_ids = patients[patients.DEATHDATE.notna()].Id.unique()
+deceased_patients = patients[patients.Id.isin(deceased_ids)]
+print(len(deceased_ids))
+deceased_patients.head(3)
+
+```
+
+#### Patients with specific conditions such as covid19
+
+To find patients with specific conditions like COVID-19, we can filter the 'conditions' table for the relevant condition code.
+
+```{python}
+covid_patient_ids = conditions[conditions.CODE == 840539006].PATIENT.unique()
+covid_patients = patients[patients.Id.isin(covid_patient_ids)]
+print(len(covid_patient_ids))
+covid_patients.head(3)
+
+```
+
+#### Patients completed home isolation
+
+To find patients who completed home isolation, we can filter the 'care_plans' DataFrame for the relevant code.
+
+```{python}
+completed_isolation_patient_ids = care_plans[(care_plans.CODE == 736376001) & (care_plans.STOP.notna()) & 
+                                          (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+completed_isolation_patients = patients[patients.Id.isin(completed_isolation_patient_ids)]
+print(len(completed_isolation_patient_ids))
+completed_isolation_patients.head(3)
+
+```
+
+#### Patient with negative test results
+
+```{python}
+negative_covid_patient_ids = observations[(observations.CODE == '94531-1') & 
+                                    (observations.VALUE == 'Not detected (qualifier value)')].PATIENT.unique()
+len(negative_covid_patient_ids)
+
+```
+
+#### Patients who survived covid19
+
+```{python}
+survivor_ids = np.union1d(completed_isolation_patient_ids, negative_covid_patient_ids)
+len(survivor_ids)
+
+```
+
+### Conclusion
+
+In this chapter, we have defined various patient groups based on their encounter types, conditions, and care plans. This allows us to analyze specific populations within the healthcare dataset, such as inpatients, ICU-admitted patients, ventilated patients, deceased patients, and those with specific conditions like COVID-19. Understanding these groups is crucial for targeted healthcare analysis and interventions.

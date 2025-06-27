@@ -1,0 +1,436 @@
+---
+title: "Inferential Statistical Analysis in Healthcare"
+author: "Thieu Nguyen"
+---
+
+### Introduction
+
+Inferential statistical analysis plays a vital role in healthcare by enabling researchers and analysts to draw conclusions about populations based on data collected from samples. Unlike descriptive statistics, which summarize data, inferential statistics allow us to make predictions, test hypotheses, and estimate relationships within the broader patient population.
+
+In healthcare, inferential methods are essential for evaluating treatment effectiveness, identifying risk factors, comparing patient outcomes across groups, and supporting evidence-based decision-making. Techniques such as hypothesis testing, confidence intervals, regression analysis, and survival analysis help clinicians and policymakers make informed judgments, even when working with limited or incomplete data.
+
+By applying inferential statistics, healthcare professionals can move beyond what is immediately observed in the data and make reliable generalizations that guide clinical practice, improve patient care, and inform public health strategies.
+
+### Load necessary python packages and data
+
+```{python}
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
+import scipy.stats as stats
+from scipy.stats import chi2_contingency
+import warnings
+warnings.filterwarnings("ignore")
+
+```
+
+
+```{python}
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+
+```
+
+```{python}
+# Ensure all columns are shown
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+
+```
+
+
+
+### Basic descriptive statistics: count, mean, min, max, median, sd
+
+```{python}
+
+lab_obs = observations[
+    observations['CODE'].isin(['48065-7', '26881-3', '2276-4', '89579-7', '731-0', '14804-9'])
+]
+lab_obs = lab_obs[['PATIENT', 'CODE', 'DESCRIPTION', 'VALUE']].dropna()
+lab_obs['VALUE'] = pd.to_numeric(lab_obs['VALUE'], errors='coerce')
+lab_obs = lab_obs.dropna(subset=['VALUE'])
+lab_obs_summary = lab_obs.groupby('DESCRIPTION').agg(
+    count=('VALUE', 'count'),
+    mean=('VALUE', 'mean'),
+    min=('VALUE', 'min'),
+    max=('VALUE', 'max'),
+    median=('VALUE', 'median'),
+    sd=('VALUE', 'std')
+).reset_index()
+
+lab_obs_summary['mean'] = lab_obs_summary['mean'].round(2)
+lab_obs_summary['sd'] = lab_obs_summary['sd'].round(2)
+
+lab_obs_summary
+
+```
+
+### Confident interval
+
+```{python}
+
+def confidence_interval(data, confidence=0.95):
+    mean = np.mean(data)
+    sem = stats.sem(data)
+    margin_of_error = sem * stats.t.ppf((1 + confidence) / 2., len(data) - 1)
+    return mean - margin_of_error, mean + margin_of_error
+
+lab_obs_ci = lab_obs.groupby('DESCRIPTION')['VALUE'].apply(confidence_interval).reset_index()
+lab_obs_ci.columns = ['DESCRIPTION', 'CI']
+lab_obs_ci['CI'] = lab_obs_ci['CI'].apply(lambda x: f"{x[0]:.2f} - {x[1]:.2f}")
+lab_obs_ci
+
+
+```
+
+### T-test
+
+The t-test is a statistical method used to compare the means of two groups to determine whether the difference between them is statistically significant. In healthcare, it is widely used to analyze patient outcomes, treatment effects, and biomarker levels.
+
+For example, a t-test can help evaluate whether:
+
+The average blood pressure differs between treated and untreated patients.
+Lab values are significantly different in patients who survived versus those who did not.
+Recovery times differ between two types of surgical procedures.
+There are different types of t-tests, such as:
+
+Independent t-test (two separate groups),
+Paired t-test (before-and-after measurements on the same subjects),
+One-sample t-test (comparing to a known value or norm).
+By using the t-test correctly, healthcare professionals and researchers can draw meaningful insights from patient data and make data-driven decisions.
+
+Use function **stats.ttest_ind(\*groups)** for t-test.
+
+```{python}
+
+from scipy import stats
+
+# Identify deceased patients
+deceased_ids = patients[patients.DEATHDATE.notna()].Id.unique()
+
+# Label observations as deceased (1) or not (0)
+lab_obs['DECEASED'] = lab_obs['PATIENT'].isin(deceased_ids).astype(int)
+lab_obs = lab_obs[lab_obs['CODE']=='48065-7'] #Ferritin [Mass/volume] in Serum or Plasma
+
+# Define t-test function
+def t_test(data, group_col, value_col):
+    groups = data.groupby(group_col)[value_col].apply(list)
+    return stats.ttest_ind(*groups)
+
+# Perform t-test on VALUE between DECEASED = 1 and DECEASED = 0
+t_test_results = t_test(lab_obs, 'DECEASED', 'VALUE')
+
+# Store results in a DataFrame
+t_test_results_df = pd.DataFrame({
+    'Statistic': [t_test_results.statistic],
+    'P-value': [t_test_results.pvalue]
+})
+
+# Show results
+t_test_results_df
+
+
+```
+
+Difference in Ferritin \[Mass/volume\] in Serum or Plasma between deceased and non-deceased patients is statistically significant with a p-value of 0.0001, indicating that deceased patients tend to have higher ferritin levels compared to those who survived.
+
+### ANOVA
+
+ANOVA (Analysis of Variance) is a statistical method used to determine whether there are significant differences between the means of three or more independent groups. Unlike a t-test, which compares only two groups, ANOVA helps assess variability across multiple groups in a single analysis.
+
+In healthcare, ANOVA is commonly used to compare treatment outcomes, lab values, or patient responses across different categories (e.g., age groups, medication types, or hospital departments). A significant result suggests that at least one group mean is different, prompting further investigation.
+
+ANOVA helps researchers make data-driven decisions and identify meaningful patterns without increasing the risk of error from multiple t-tests.
+
+To compare 'Ferritin [Mass/volume] in Serum or Plasma' across different timepoints relative to COVID-19 diagnosis, we will perform a one-way ANOVA test. The steps include filtering the lab observations for Ferritin, calculating the time since COVID-19 diagnosis, and assigning timepoints based on the number of days since diagnosis.
+
+```{python}
+anova_lab_obs = observations[
+    observations['CODE'] =='48065-7']  # Ferritin [Mass/volume] in Serum or Plasma
+
+# Filter rows with COVID-19 diagnosis
+covid_conds = conditions[conditions['DESCRIPTION'] == 'COVID-19'].copy()
+
+# Convert 'START' to datetime
+covid_conds['START'] = pd.to_datetime(covid_conds['START'])
+
+# Get earliest COVID diagnosis date per patient
+covid_dates = covid_conds.groupby('PATIENT')['START'].min().reset_index()
+covid_dates.rename(columns={'START': 'covid_date'}, inplace=True)
+
+# Merge COVID dates into lab observations
+anova_lab_obs = anova_lab_obs.merge(covid_dates, on='PATIENT', how='left')
+
+# Convert lab date to datetime (replace 'DATE' with actual column name if needed)
+anova_lab_obs['DATE'] = pd.to_datetime(anova_lab_obs['DATE'])
+
+# Calculate days between lab observation and COVID diagnosis
+anova_lab_obs['days'] = (anova_lab_obs['DATE'] - anova_lab_obs['covid_date']).dt.days
+
+# Drop rows with missing 'days' values (patients without COVID diagnosis)
+anova_lab_obs = anova_lab_obs.dropna(subset=['days']).copy()
+
+# Convert 'days' to integer
+anova_lab_obs['days'] = anova_lab_obs['days'].astype(int)
+
+# Preview
+anova_lab_obs.head(3)
+
+```
+
+Set three time points of covid process: baseline, week 1 and later.
+
+
+```{python}
+# Assign timepoints based on number of days
+def assign_timepoint(days):
+    if days == 0:
+        return 'baseline'
+    elif 6 <= days <= 8:
+        return 'week_1'
+    elif 9 <= days :
+        return 'later'
+    else:
+        return None
+
+# Apply the timepoint assignment
+anova_lab_obs['TIMEPOINT'] = anova_lab_obs['days'].apply(assign_timepoint)
+
+# Drop rows without a valid timepoint
+anova_lab_obs = anova_lab_obs.dropna(subset=['TIMEPOINT']).copy()
+
+anova_lab_obs['VALUE'] = pd.to_numeric(anova_lab_obs['VALUE'], errors='coerce')
+anova_lab_obs.head(3)
+
+```
+
+Use function **stats.f_oneway(\*groups)** for one-way ANOVA test.
+
+
+```{python}
+# Drop missing values to avoid errors
+anova_data = anova_lab_obs[['TIMEPOINT', 'VALUE']].dropna()
+
+# Group by TIMEPOINT and extract VALUE lists
+groups = anova_data.groupby('TIMEPOINT')['VALUE'].apply(list)
+
+# Perform one-way ANOVA test
+anova_result = stats.f_oneway(*groups)
+
+# Show result
+anova_df = pd.DataFrame({
+    'F-statistic': [anova_result.statistic],
+    'P-value': [anova_result.pvalue]
+})
+
+print(anova_df)
+```
+
+
+There is strong statistical evidence that the mean Ferritin levels is significantly different across at least one of the TIMEPOINT groups.
+
+### Chi-square test
+
+The Chi-Square test is a statistical method used to examine the association between two categorical variables. In healthcare, it’s often applied to determine whether there is a significant relationship between variables like treatment outcomes, patient demographics, and disease status.
+
+For example, the Chi-Square test can help answer questions like:
+
+- Is there a relationship between smoking status and the presence of lung disease?
+- Are ICU admission rates different across age groups?
+- Does the recovery rate differ by gender?
+- The test compares the observed frequencies in a contingency table with the expected frequencies that would occur if there were no association. A significant result suggests that the variables are not independent.
+
+This makes the Chi-Square test a valuable tool in epidemiology, public health studies, and clinical research, where categorical data is common.
+
+Use the function **stats.chi2_contingency(observed)** for Chi-Square test.
+
+
+```{python}
+anova_lab_obs['DECEASED'] = anova_lab_obs['PATIENT'].isin(deceased_ids).astype(int)
+# Create a contingency table for DECEASED and TIMEPOINT
+contingency_table = pd.crosstab(anova_lab_obs['DECEASED'], anova_lab_obs['TIMEPOINT'])
+# Perform Chi-Square test
+chi2_stat, p_value, _, _ = stats.chi2_contingency(contingency_table)
+chi2_results = pd.DataFrame({
+    'Chi2 Statistic': [chi2_stat],
+    'P-value': [p_value]
+})
+chi2_results
+
+```
+
+The Chi-Square test results indicate a significant association between the TIMEPOINT and DECEASED status, with a p-value of 0.0001. This suggests that the distribution of deceased and non-deceased patients varies significantly across the different timepoints relative to COVID-19 diagnosis.
+
+
+### Correlation and Regression Analysis
+
+Correlation and regression analysis are essential statistical methods used to explore relationships between variables in healthcare data. They help identify patterns, predict outcomes, and inform clinical decisions.
+
+Correlation measures the strength and direction of a linear relationship between two continuous variables. In healthcare, it can reveal associations such as:
+- The relationship between age and blood pressure.
+- The correlation between medication dosage and patient recovery time.
+
+```{python}
+from scipy.stats import pearsonr
+
+# Drop rows with missing values in VALUE or days
+df = anova_lab_obs[['VALUE', 'days']].dropna()
+
+# Calculate Pearson correlation
+correlation, p_value = pearsonr(df['VALUE'], df['days'])
+
+print(f"Pearson correlation: {correlation:.4f}")
+print(f"P-value: {p_value:.4g}")
+
+```
+
+
+Regression analysis extends correlation by modeling the relationship between a dependent variable and one or more independent variables. It allows for predictions and understanding of how changes in predictors affect the outcome. In healthcare, regression can be used to:
+- Predict patient outcomes based on treatment variables.
+- Assess the impact of lifestyle factors on disease progression.
+
+```{python}
+import statsmodels.api as sm
+
+# Drop missing values
+df = anova_lab_obs[['VALUE', 'days']].dropna()
+
+# Define independent (X) and dependent (y) variables
+X = df['days']
+y = df['VALUE']
+
+# Add constant term for intercept
+X = sm.add_constant(X)
+
+# Fit linear regression model
+model = sm.OLS(y, X).fit()
+
+# Print model summary
+print(model.summary())
+
+
+```
+
+Ploting the regression line on the scatter plot of Ferritin [Mass/volume] vs days.
+
+```{python}
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.regplot(x='days', y='VALUE', data=df, ci=None, line_kws={"color": "red"})
+plt.title("Linear Regression: Ferritin [Mass/volume] vs Covid-19 days")
+plt.xlabel("Days since COVID-19 diagnosis")
+plt.ylabel("Ferritin [Mass/volume]")
+plt.show()
+
+```
+
+
+### Non-parametric tests
+
+Non-parametric tests are statistical methods that do not assume a specific distribution for the data. They are particularly useful in healthcare when dealing with small sample sizes, ordinal data, or when the assumptions of parametric tests (like normality) are violated.
+These tests are robust and can be applied to a wide range of data types, making them valuable in clinical research, epidemiology, and public health studies.
+
+
+### Mann-Whitney U Test
+
+```{python}
+# Mann-Whitney U Test for Ferritin levels between deceased and non-deceased patients
+
+anova_lab_obs['DATE'] = pd.to_datetime(anova_lab_obs['DATE'], errors='coerce')
+anova_lab_obs = anova_lab_obs[anova_lab_obs['DATE'] > pd.to_datetime('2020-04-01')]
+
+mann_whitney_results = stats.mannwhitneyu(
+    anova_lab_obs[anova_lab_obs['DECEASED'] == 1]['VALUE'],
+    anova_lab_obs[anova_lab_obs['DECEASED'] == 0]['VALUE'],
+    alternative='two-sided'
+)
+mann_whitney_df = pd.DataFrame({
+    'Statistic': [mann_whitney_results.statistic],
+    'P-value': [mann_whitney_results.pvalue]
+})
+mann_whitney_df
+
+```
+
+
+### Kruskal-Wallis Test
+
+The Kruskal-Wallis test is a non-parametric method used to compare three or more independent groups. It is an extension of the Mann-Whitney U test and is particularly useful when the assumptions of ANOVA are not met, such as when the data is not normally distributed or when dealing with ordinal data.
+
+
+```{python}
+# Ensure TIMEPOINT is a categorical variable
+anova_lab_obs['TIMEPOINT'].value_counts()
+                                               
+```
+
+
+```{python}
+# Kruskal-Wallis test for Ferritin levels across different timepoints
+kruskal_results = stats.kruskal(
+    anova_lab_obs[anova_lab_obs['TIMEPOINT'] == 'baseline']['VALUE'],
+    anova_lab_obs[anova_lab_obs['TIMEPOINT'] == 'week_1']['VALUE'],
+    anova_lab_obs[anova_lab_obs['TIMEPOINT'] == 'later']['VALUE']
+)
+kruskal_df = pd.DataFrame({
+    'Statistic': [kruskal_results.statistic],
+    'P-value': [kruskal_results.pvalue]
+})
+kruskal_df
+```
+
+There is strong statistical evidence that the mean Ferritin is significantly different across at least one of the TIMEPOINT groups.
+
+
+### Wilcoxon Signed-Rank Test
+
+The Wilcoxon Signed-Rank test is a non-parametric statistical method used to compare two related samples or matched observations. It is particularly useful when the data does not meet the assumptions of normality required for paired t-tests. In healthcare, it can be applied to assess changes in patient outcomes before and after treatment, or to compare measurements taken at two different time points on the same subjects.
+
+```{python}
+# Filter data
+baseline = anova_lab_obs[anova_lab_obs['TIMEPOINT'] == 'baseline'][['PATIENT', 'VALUE']]
+week_1 = anova_lab_obs[anova_lab_obs['TIMEPOINT'] == 'week_1'][['PATIENT', 'VALUE']]
+
+# Rename columns
+baseline = baseline.rename(columns={'VALUE': 'baseline_value'})
+week_1 = week_1.rename(columns={'VALUE': 'week_1_value'})
+
+# Merge on PATIENT to ensure pairing
+paired = pd.merge(baseline, week_1, on='PATIENT')
+
+# Drop NaNs
+paired = paired.dropna(subset=['baseline_value', 'week_1_value'])
+
+# Run Wilcoxon Signed-Rank Test
+from scipy.stats import wilcoxon
+
+wilcoxon_results = wilcoxon(paired['baseline_value'], paired['week_1_value'])
+
+# Create results DataFrame
+wilcoxon_df = pd.DataFrame({
+    'Statistic': [wilcoxon_results.statistic],
+    'P-value': [wilcoxon_results.pvalue]
+})
+
+print(wilcoxon_df)
+
+
+```
+
+The Wilcoxon Signed-Rank test results indicate a significant difference in Ferritin levels between the baseline and week 1 timepoints, with a p-value of 0.0001. This suggests that Ferritin levels change significantly after COVID-19 diagnosis.
+
+
+### Conclusion
+
+In this chapter, we explored various inferential statistical methods used in healthcare data analysis. We covered basic descriptive statistics, confidence intervals, t-tests, ANOVA, Chi-Square tests, correlation and regression analysis, and non-parametric tests like the Mann-Whitney U test, Kruskal-Wallis test, and Wilcoxon Signed-Rank test. 
+These methods are essential for drawing meaningful conclusions from healthcare data, allowing researchers and clinicians to make informed decisions based on statistical evidence. By applying these techniques, we can better understand patient outcomes, treatment effectiveness, and disease patterns, ultimately improving healthcare delivery and patient care.

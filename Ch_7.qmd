@@ -1,0 +1,641 @@
+---
+title: "Linear Regression - Machine Learning Models"
+author: "Thieu Nguyen"
+format: html
+editor: visual
+---
+
+### Introduction
+
+Machine learning is a powerful tool for identifying patterns and making predictions from data, especially in healthcare. Among its many techniques, linear regression is one of the most fundamental, particularly for predicting continuous outcomes.
+
+In this chapter, We’ll apply linear regression to a real-world healthcare dataset — heart.csv — which includes clinical and demographic data related to cholesterol levels. We'll cover data preparation, model building, performance evaluation, and result interpretation in a medical context.
+
+This hands-on approach reinforces core machine learning concepts and shows how even simple models can yield valuable insights. We'll also address challenges like data missing, multicollinearity and outliers that can affect model accuracy.
+
+### Load python necessary packages and data
+
+
+```{python}
+# Python packages
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Load data
+df= pd.read_csv("/Users/nnthieu/Downloads/heart.csv")
+print(df.shape)
+print(df.columns)
+df.head()
+
+```
+File heart.csv has 5209 rows and 17 columns, where each row represents a patient and each column represents a feature or attribute related to heart disease.
+
+### Evaluate the dataset
+
+#### Check for missing data
+
+The dataset contains some missing values, which we will need to handle before applying machine learning algorithms. We can check for missing values using the following code:
+
+
+```{python}
+df.isna().sum()
+```
+
+#### look at the data distribution of the numeric variables:
+
+Check the histogram to see if there are any outliers in the numeric variables.
+
+```{python}
+def plot_histograms(df, bins=10, alpha=0.5, colors=None):
+    """
+    Plot histograms for all numeric variables in the DataFrame.
+    Parameters:
+        df (DataFrame): The DataFrame containing numeric variables.
+        bins (int): Number of bins for the histograms. Default is 10.
+        alpha (float): Transparency level of the histograms. Default is 0.5.
+        colors (list): List of colors for the histograms. If None, default colors will be used.
+    Returns:
+        None
+    """
+    if colors is None:
+        colors = plt.cm.tab10.colors  # Default color palette
+
+    num_variables = df.select_dtypes(include='number').shape[1]
+    num_rows = (num_variables + 1) // 2
+    num_cols = 2
+    
+    plt.figure(figsize=(12, 6 * num_rows))
+
+    for i, col in enumerate(df.select_dtypes(include='number'), start=1):
+        plt.subplot(num_rows, num_cols, i)
+        plt.hist(df[col], bins=bins, alpha=alpha, color=colors[i % len(colors)])
+        plt.title(f'Histogram of {col}')
+        plt.xlabel('Value')
+        plt.ylabel('Frequency')
+        plt.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+# Assuming df is your DataFrame containing numeric variables
+plot_histograms(df)
+
+```
+
+
+#### Check correlation between variables using heatmap
+
+To visualize the correlation between variables in the dataset, We will create a heatmap. This will help us identify relationships between features and understand how they might influence cholesterol levels.
+
+
+```{python}
+
+# Drop 'Cholesterol'
+df_corr = df.drop(columns=['Cholesterol'])
+
+# Encode categorical variables (required for correlation matrix)
+categorical_cols = df_corr.select_dtypes(include=['object', 'category']).columns.tolist()
+df_corr_encoded = pd.get_dummies(df_corr, columns=categorical_cols, drop_first=True)
+
+# Compute correlation matrix
+corr_matrix = df_corr_encoded.corr()
+
+# Plot heatmap
+plt.figure(figsize=(14, 12))
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))  # mask upper triangle
+
+sns.heatmap(
+    corr_matrix,
+    mask=mask,
+    cmap='coolwarm',
+    vmin=-1, vmax=1,
+    center=0,
+    square=True,
+    linewidths=0.5,
+    annot=True,
+    fmt='.2f',
+    cbar_kws={"shrink": 0.8}
+)
+
+plt.title("Feature Correlation Heatmap (Excluding 'Cholesterol')", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+```
+
+Highly correlated features can lead to multicollinearity, which can affect the performance of linear regression models. To identify pairs of features with high correlation, we will extract the upper triangle of the correlation matrix and filter for pairs with an absolute correlation greater than 0.65.
+
+
+```{python}
+# Step 1: Drop 'Cholesterol' and one-hot encode categorical features
+df_corr = df.drop(columns=['Cholesterol'])
+categorical_cols = df_corr.select_dtypes(include=['object', 'category']).columns
+df_corr_encoded = pd.get_dummies(df_corr, columns=categorical_cols, drop_first=True)
+
+# Step 2: Compute correlation matrix
+corr_matrix = df_corr_encoded.corr().abs()
+
+# Step 3: Extract upper triangle (to avoid duplicate pairs)
+upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+
+# Step 4: Find feature pairs with correlation > 0.7
+high_corr_pairs = (
+    upper.stack()
+    .reset_index()
+    .rename(columns={0: 'correlation', 'level_0': 'feature_1', 'level_1': 'feature_2'})
+    .query('correlation > 0.65')
+    .sort_values(by='correlation', ascending=False)
+)
+
+print("Highly correlated feature pairs (|correlation| > 0.65):")
+print(high_corr_pairs)
+
+```
+'Cholesterol' and 'DeathCause'
+
+```{python}
+# Calculate mean cholesterol for each DeathCause
+mean_cholesterol = df.groupby('DeathCause')['Cholesterol'].mean()
+
+# Create bar plot
+plt.figure(figsize=(10, 6))
+mean_cholesterol.plot(kind='bar', color='skyblue')
+plt.title('Mean Cholesterol by Death Cause')
+plt.xlabel('Death Cause')
+plt.ylabel('Mean Cholesterol')
+plt.xticks(rotation=45)  # Rotate x-axis labels for better visibility
+
+# Add mean values to the bars
+for index, value in enumerate(mean_cholesterol):
+    plt.text(index, value, str(round(value, 2)), ha='center', va='bottom')
+
+plt.tight_layout()
+plt.show()
+```
+'DeathCause' is consequences, not exposurer, that should be removed from the regression models.
+
+Highly correlated features will be removed from the dataset to avoid multicollinearity issues. Therefore, we should get out variables as 'MRW', 'Weight_Status_Overweight', 'Height'.
+
+### Prepare data
+
+#### Remove unnecessary variables
+
+```{python}
+df = df.drop(columns=[
+    'DeathCause', 'MRW', 'Smoking_Status', 
+    'Weight_Status', 'Height', 'Systolic', 'AgeAtDeath', 'BP_Status'
+], errors='ignore')
+
+df.head(3)
+
+```
+
+Data have to be prepared before applying machine learning algorithms. This includes handling missing values, recoding categorical variables, and detecting outliers.
+
+#### replace NA
+
+
+```{python}
+# Clean values (strip spaces, normalize case)
+df['Chol_Status'] = df['Chol_Status'].astype(str).str.strip().str.title()
+df['Chol_Status'] = df['Chol_Status'].replace('Nan', np.nan)  # convert literal "nan" string to real NaN
+
+# Impute missing values using distribution
+proportions = df['Chol_Status'].value_counts(normalize=True, dropna=True)
+missing_count = df['Chol_Status'].isna().sum()
+
+if missing_count > 0 and not proportions.empty:
+    missing_samples = np.random.choice(
+        proportions.index,
+        size=missing_count,
+        p=proportions.values
+    )
+    df.loc[df['Chol_Status'].isna(), 'Chol_Status'] = missing_samples
+```
+
+
+```{python}
+# Calculate means for numeric columns
+means = df.mean(numeric_only=True)
+
+# Impute missing values in numeric columns using their respective means
+for col in df.select_dtypes(include='number'):
+    df[col] = df[col].fillna(means[col])
+
+df.describe()
+```
+
+Check NA again
+
+```{python}
+df.isna().sum()
+```
+
+#### Recoding data
+
+To prepare the dataset for machine learning, we need to recode categorical variables into numerical values. This is essential because most machine learning algorithms require numerical input.
+
+
+```{python}
+# Define mapping dictionary
+status_mapping = {'Dead':1, 'Alive':0}
+
+# Decode 'Status' column
+df['Status'] = df['Status'].map(status_mapping)
+```
+
+
+```{python}
+# Define mapping dictionary
+status_mappingSex = {'Male':1, 'Female':0 }
+
+df['Sex'] = df['Sex'].map(status_mappingSex)
+```
+
+
+```{python}
+status_mappingC = {'Borderline': 1, 'Desirable': 0, 'High': 2}
+
+df['Chol_Status'] = df['Chol_Status'].apply(
+    lambda x: status_mappingC.get(x, np.nan)
+)
+```
+
+
+Check NA again
+
+```{python}
+df.isna().sum()
+```
+
+
+```{python}
+print(df.columns)
+df.head()
+```
+
+
+#### Detect and drop the outliers in numeric variables
+
+
+```{python}
+# Function to detect outliers using IQR method
+def detect_outliers(df, variable):
+    Q1 = df[variable].quantile(0.25)
+    Q3 = df[variable].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = df[(df[variable] < lower_bound) | (df[variable] > upper_bound)]
+    return outliers
+
+# Define numeric variables to detect outliers
+numeric_variables = ['Cholesterol', 'AgeCHDdiag', 'AgeAtStart', 'Weight', 'Smoking']
+
+# Create a dictionary to store outliers for each variable
+outliers_dict = {}
+
+# Detect outliers in each numeric variable
+for col in numeric_variables:
+    outliers_dict[col] = detect_outliers(df, col)
+
+# Print outliers for each variable
+for col, outliers in outliers_dict.items():
+    print(f"Outliers in {col}:")
+    print(outliers.head(10))
+
+```
+
+
+#### Drop outliers
+
+```{python}
+# Drop outliers from df
+for col, outliers in outliers_dict.items():
+    try:
+        df.drop(outliers.index, inplace=True)
+    except KeyError:
+        # Handle KeyError if the column doesn't exist in the DataFrame
+        pass
+
+# Reset index after dropping outliers
+df.reset_index(drop=True, inplace=True)
+
+# Verify the DataFrame after dropping outliers
+print(df.head(10))
+```
+#### Check NA again
+
+```{python}
+df.isna().sum()
+```
+
+
+### Linear regression model
+
+#### Building the model
+
+
+```{python}
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+
+# Encode categorical features
+# Identify categorical columns (object or category types)
+categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+
+# Optional: drop target-related columns before encoding
+categorical_cols = [col for col in categorical_cols if col not in ['Cholesterol', 'Chol_Status']]
+
+# One-hot encode
+df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+
+# Split data 
+X = df_encoded.drop(['Cholesterol', 'Chol_Status'], axis=1)
+y = df_encoded['Cholesterol']
+
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Fit model
+model = LinearRegression()
+model.fit(X_train, y_train)
+
+# Predict and evaluate 
+y_pred = model.predict(X_test)
+
+mse = mean_squared_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print("Mean Squared Error:", mse)
+print("R-squared (R²) score:", r2)
+
+```
+
+
+#### Select variables contributing most to the model
+
+```{python}
+# Extract coefficients
+coefficients = model.coef_
+
+# Match coefficients with feature names
+feature_names = X.columns
+coefficients_df = pd.DataFrame({'Feature': feature_names, 'Coefficient': coefficients})
+
+# Sort coefficients by absolute value
+coefficients_df['Absolute Coefficient'] = coefficients_df['Coefficient'].abs()
+sorted_coefficients_df = coefficients_df.sort_values(by='Absolute Coefficient', ascending=False).reset_index(drop=True)
+
+# Print the top contributing features
+print("Top contributing features:")
+print(sorted_coefficients_df)
+
+```
+
+#### rewrite the model with top 7 variables most contribute to the model
+
+```{python}
+
+# Encode categorical features
+# Identify categorical columns (object or category types)
+categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+
+# Optional: drop target-related columns before encoding
+categorical_cols = [col for col in categorical_cols if col not in ['Cholesterol', 'Chol_Status']]
+
+# One-hot encode
+df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+
+# Split data 
+X = df_encoded.drop(['Cholesterol', 'Chol_Status'], axis=1)
+y = df_encoded['Cholesterol']
+
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Initialize linear regression model
+model = LinearRegression()
+
+# Fit the model on the training data
+model.fit(X_train, y_train)
+
+# Extract coefficients
+coefficients = model.coef_
+
+# Match coefficients with feature names
+feature_names = X.columns
+coefficients_df = pd.DataFrame({'Feature': feature_names, 'Coefficient': coefficients})
+
+# Sort coefficients by absolute value
+coefficients_df['Absolute Coefficient'] = coefficients_df['Coefficient'].abs()
+sorted_coefficients_df = coefficients_df.sort_values(by='Absolute Coefficient', ascending=False)
+
+# Select top 10 features
+top_features = sorted_coefficients_df.iloc[:7]['Feature'].tolist()
+
+# Fit the model on training data with top 10 features
+X_train_top = X_train[top_features]
+model.fit(X_train_top, y_train)
+
+# Evaluate the model on testing data
+X_test_top = X_test[top_features]
+score = model.score(X_test_top, y_test)
+print("R-squared (R2) score using top 7 features:", score)
+
+```
+
+#### Visualization
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+#Plot actual vs. predicted cholesterol values
+plt.figure(figsize=(8, 6))
+plt.scatter(y_test, y_pred, color='blue')
+plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], color='red', linestyle='--')
+plt.xlabel('Actual Cholesterol')
+plt.ylabel('Predicted Cholesterol')
+plt.title('Actual vs. Predicted Cholesterol')
+plt.grid(True)
+plt.show()
+
+```
+
+This is a relatively low R² score, suggesting that while the model captures some relationship between the features and cholesterol levels, there are likely other factors not included in the model that significantly influence cholesterol levels. Further feature engineering or inclusion of additional relevant variables may improve the model's performance.
+
+### Running linear regression using statsmodels
+
+```{python}
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
+
+# Encode categorical features (skip target columns)
+categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+categorical_cols = [col for col in categorical_cols if col not in ['Cholesterol', 'Chol_Status']]
+df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+
+# Define features and target
+X = df_encoded.drop(['Cholesterol', 'Chol_Status'], axis=1)
+y = df_encoded['Cholesterol']
+
+# Step 3: Split into train/test sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Align test columns to train
+X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
+
+# Ensure all data is numeric and float (important for statsmodels)
+X_train = X_train.astype(float)
+X_test = X_test.astype(float)
+y_train = y_train.astype(float)
+
+# Add constant for intercept
+X_train = sm.add_constant(X_train)
+X_test = sm.add_constant(X_test)
+
+# Fit the model
+lm2 = sm.OLS(y_train, X_train).fit()
+
+# Show summary
+print(lm2.summary())
+
+```
+
+
+**statsmodels** improves R-squared score to 0.114.
+
+Identify influenced rows that might affect the model performance. We will use studentized residuals to detect outliers.
+
+```{python}
+influence = lm2.get_influence()  
+resid_student = influence.resid_studentized_external
+resid = pd.concat([X_train,pd.Series(resid_student,name = "Studentized Residuals")],axis = 1)
+resid.head()
+
+```
+
+```{python}
+resid.loc[np.absolute(resid["Studentized Residuals"]) > 3,:]
+```
+
+```{python}
+# If resid was computed from statsmodels on X_train:
+outliers = np.abs(resid["Studentized Residuals"]) > 3
+ind = resid[outliers].index
+
+# Only drop if the indices actually exist
+valid_ind = [i for i in ind if i in X_train.index]
+
+X_train.drop(index=valid_ind, inplace=True)
+y_train.drop(index=valid_ind, inplace=True)
+
+```
+
+
+#### Detecting and removing multicollinearity
+
+Multicollinearity occurs when two or more independent variables in a regression model are highly correlated, which can lead to unreliable coefficient estimates. We can detect multicollinearity using the Variance Inflation Factor (VIF).
+
+```{python}
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+[variance_inflation_factor(X_train.values, j) for j in range(X_train.shape[1])]
+```
+
+We create a function to remove the collinear variables. We choose a threshold of 5 which means if VIF is more than 5 for a particular variable then that variable will be removed.
+
+```{python}
+def calculate_vif(x):
+    thresh = 5.0
+    output = pd.DataFrame()
+    k = x.shape[1]
+    vif = [variance_inflation_factor(x.values, j) for j in range(x.shape[1])]
+    for i in range(1,k):
+        print("Iteration no.")
+        print(i)
+        print(vif)
+        a = np.argmax(vif)
+        print("Max VIF is for variable no.:")
+        print(a)
+        if vif[a] <= thresh :
+            break
+        if i == 1 :          
+            output = x.drop(x.columns[a], axis = 1)
+            vif = [variance_inflation_factor(output.values, j) for j in range(output.shape[1])]
+        elif i > 1 :
+            output = output.drop(output.columns[a],axis = 1)
+            vif = [variance_inflation_factor(output.values, j) for j in range(output.shape[1])]
+    return(output)
+train_out = calculate_vif(X_train)
+train_out.head(3)
+```
+
+#### Running linear regression again on our new training set (without multicollinearity)
+
+```{python}
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
+
+# Encode categorical features (skip target columns)
+categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+categorical_cols = [col for col in categorical_cols if col not in ['Cholesterol', 'Chol_Status']]
+df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+
+# Step 2: Define features and target
+X = df_encoded.drop(['Cholesterol', 'Chol_Status'], axis=1)
+y = df_encoded['Cholesterol']
+
+# Split into train/test sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Step 4: Align test columns to train
+X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
+
+# Ensure all data is numeric and float (important for statsmodels)
+X_train = X_train.astype(float)
+X_test = X_test.astype(float)
+y_train = y_train.astype(float)
+
+# Add constant for intercept
+train_out = sm.add_constant(train_out)
+X_test = sm.add_constant(X_test)
+# Step 7: Fit the model
+lm2 = sm.OLS(y_train, X_train).fit()
+
+# Show summary
+print(lm2.summary())
+```
+
+R-squared score is improved significantly to 0.971 and no more multicolinear variables.
+
+### Conclusion
+
+In this chapter, we explored the application of linear regression to a healthcare dataset, specifically focusing on predicting cholesterol levels. We demonstrated the importance of data preparation, including handling missing values, encoding categorical variables, and detecting outliers. We also addressed multicollinearity by calculating Variance Inflation Factor (VIF) and removing collinear variables, which significantly improved the model's performance.
+
+We built a linear regression model using the statsmodels library, which provided detailed insights into the model's performance and the significance of each feature. The final model achieved a high R-squared score, indicating that it explained a substantial portion of the variance in cholesterol levels.
+
+
+
+
+
+
+
+

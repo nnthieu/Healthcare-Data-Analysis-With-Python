@@ -1,0 +1,290 @@
+---
+title: "Process Datetime in Healthcare Data Analysis"
+author: "Thieu Nguyen"
+---
+
+### Introduction
+
+Statistical analysis techniques such as sum, mean, and pivot_table, etc, can be learned from statistics textbooks. However, the ability to derive meaningful insights from data analysis often comes from real-world experience in specific industries, such as healthcare.
+
+In this chapter, I will demonstrate how to work with datetime variables in healthcare data analysis. The focus will be on handling datetime fields in healthcare databases using real-world examples.
+
+Almost fact tables such as 'conditions', 'encounters', 'observations' and more in hospital database are long data table with datetime are the index columns. Patient records are repeated at many points in time forming time series. Datetime series can be irregular without a fixed unit of time depending on the medical events unexpectedly happen in hospitals.
+
+I use covid data from SyntheaMass database to demonstrate how to proccess datetime variables in this chapter.
+
+### Load necessary python packages and data files
+
+```{python}
+import pandas as pd
+import numpy as np
+import datetime as dt
+from datetime import datetime
+
+```
+
+```{python}
+# Ensure all columns are shown
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+
+```
+
+```{python}
+# Load the data
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+
+```
+
+#### Date and Datetime in tables
+
+'START' and 'STOP' columns in the tables are datetime variables. They are used to indicate the time when a medical event starts and ends. The 'START' column is the datetime when the event begins, while the 'STOP' column is the datetime when the event ends. These two columns are timestamps data type, '2019-02-16T01:43:20Z'. These columns can be transformed to date type as '2019-02-16'.
+
+```{python}
+encounters.head(3)
+
+```
+
+'START' and 'STOP' in table 'conditions' are 'date' type, which is a date without time information. The 'START' column indicates the date when the diagnosis begins, while the 'STOP' column indicates the date when the disease ends. These columns are in the format 'YYYY-MM-DD', such as '2019-02-16'.
+
+```{python}
+conditions.head(3)
+```
+
+### Convert datetime to date
+
+To convert the 'START' and 'STOP' columns in the 'encounters' table from datetime to date, we can use the `pd.to_datetime()` function to parse the datetime strings and then use the `.dt.date` accessor to extract just the date part.
+
+```{python}
+encounters = encounters.copy()
+
+# Convert 'START' and 'STOP' columns to datetime
+encounters['START'] = pd.to_datetime(encounters['START'])
+encounters['STOP'] = pd.to_datetime(encounters['STOP'])
+
+# Convert to date
+encounters['START2'] = encounters['START'].dt.date
+encounters['STOP2'] = encounters['STOP'].dt.date
+
+# Display the first few rows to verify the conversion
+encounters.head(3)
+
+```
+
+### Set the date when disease is diagnosed for patients
+
+In the 'conditions' table, the 'START' column indicates the date when a disease is diagnosed for a patient. To set this date, we can simply use the 'START' column as it already contains the date information. We can also convert the 'START' column to a date type if it is not already in that format.
+
+```{python}
+# Filter COVID-19 rows
+covid_conds = conditions[conditions['DESCRIPTION'] == 'COVID-19'].copy()
+
+# Convert START to datetime
+covid_conds['START'] = pd.to_datetime(conditions['START'])
+
+# Group by PATIENT and get the earliest COVID date
+covid_dates = covid_conds.groupby('PATIENT')['START'].min().reset_index()
+covid_dates.rename(columns={'START': 'covid_date'}, inplace=True)
+
+# Merge back to the original conditions table
+covid_conditions = conditions.merge(covid_dates, on='PATIENT', how='left')
+
+# Preview result
+covid_conditions.head(7)
+
+```
+
+### Convert a specific date to datetime
+
+```{python}
+import pytz
+
+observations['DATE'] = pd.to_datetime(observations['DATE'], errors='coerce')
+
+# Use a UTC-aware timestamp for comparison
+cutoff = pd.to_datetime("2020-02-19")
+
+# Filter
+observations = observations[observations['DATE'] >= cutoff]
+observations.head(3)
+
+```
+
+Identify MIN, MAX date in the 'START' column of the 'encounters' table. This will give us the earliest and latest dates in the dataset.
+
+```{python}
+# Make a copy to avoid modifying the original DataFrame
+encounters = encounters.copy()
+
+# Ensure DATE column is datetime type
+encounters['START'] = pd.to_datetime(encounters['START'], errors='coerce')
+
+# Print the min and max date
+print(encounters['START'].dt.date.min())
+print(encounters['START'].dt.date.max())
+
+```
+
+### Create a variable of date difference
+
+to calculate the number of days since diagnosed with COVID for each patient. This can be done by subtracting the 'START' date by 'covid_date'.
+
+```{python}
+
+covid_patient_ids = conditions[conditions.CODE == 840539006].PATIENT.unique()
+
+# Further filter by COVID patient IDs
+lab_obs = observations[observations['PATIENT'].isin(covid_patient_ids)]
+
+# Filter observations by specific CODE values
+lab_obs = observations[
+    observations['CODE'].isin(['48065-7', '26881-3', '2276-4', '89579-7', '731-0', '14804-9'])
+]
+
+# Ensure the DATE column is in datetime format
+lab_obs['DATE'] = pd.to_datetime(lab_obs['DATE'], errors='coerce')
+
+# Filter rows after 2020-01-20 for covid-related data
+lab_obs = lab_obs[lab_obs['DATE'] > pd.to_datetime('2020-01-20')].copy()
+
+lab_obs = lab_obs.merge(covid_dates, on = 'PATIENT').copy()
+
+# Calculate the number of days since the COVID diagnosis
+lab_obs['days'] = (pd.to_datetime(lab_obs['DATE']) - pd.to_datetime(lab_obs['covid_date'])).dt.days.copy()
+
+# Preview first 3 rows
+lab_obs.head(3)
+
+```
+
+```{python}
+lab_obs['days'].describe()
+
+```
+
+### Create a time-point variable
+
+```{python}
+# Assign timepoints based on number of days
+def assign_timepoint(days):
+    if days == 0:
+        return 'baseline'
+    elif 6 <= days <= 8:
+        return 'week_1'
+    else:
+        return None
+
+# Apply the timepoint assignment
+lab_obs['TIMEPOINT'] = lab_obs['days'].apply(assign_timepoint)
+
+# Drop rows without a valid timepoint
+lab_obs = lab_obs.dropna(subset=['TIMEPOINT']).copy()
+
+lab_obs['VALUE'] = pd.to_numeric(lab_obs['VALUE'], errors='coerce')
+
+# Aggregate the data
+summary = lab_obs.pivot_table(
+    index="DESCRIPTION",
+    columns="TIMEPOINT",
+    values="VALUE",
+    aggfunc="mean"
+).round(2)
+
+summary
+
+```
+
+### Lag comparison - Create a variable of readmission to hospital
+
+Patients who are readmitted to the hospital within 30 days of their last discharge. This can be done by checking if the difference between the 'START' date of the current encounter and the 'STOP' date of the previous encounter is less than or equal to 30 days. The purpose is to find how many patients are readmitted to the hospital within 30 days of their last discharge. This is a common metric in healthcare to assess the quality of care and patient outcomes.
+
+```{python}
+#encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+
+inpatients = encounters[encounters.ENCOUNTERCLASS == 'inpatient'].copy()
+inpatients.head()
+```
+
+```{python}
+
+# Filter for inpatients and explicitly make a copy
+inpatients = encounters[encounters.ENCOUNTERCLASS == 'inpatient'].copy()
+
+# Convert date columns
+inpatients['START'] = pd.to_datetime(inpatients['START'])
+inpatients['STOP'] = pd.to_datetime(inpatients['STOP'])
+
+# Sort by PATIENT and START date
+inpatients = inpatients.sort_values(['PATIENT', 'START'])
+
+# Get the previous STOP date per patient
+inpatients['PREV_STOP'] = inpatients.groupby('PATIENT')['STOP'].shift(1)
+
+# Calculate the gap in days since the last discharge
+inpatients['DAYS_SINCE_LAST_DISCHARGE'] = (inpatients['START'] - inpatients['PREV_STOP']).dt.days
+
+# Identify readmissions within 30 days
+inpatients['READMITTED_WITHIN_30_DAYS'] = (
+    (inpatients['DAYS_SINCE_LAST_DISCHARGE'] > 0) &
+    (inpatients['DAYS_SINCE_LAST_DISCHARGE'] <= 30)
+)
+
+# Display relevant columns
+print(inpatients[['PATIENT', 'START', 'PREV_STOP', 'DAYS_SINCE_LAST_DISCHARGE', 'READMITTED_WITHIN_30_DAYS']])
+
+# Calculate patient-level readmission rate
+readmission_rate = inpatients.groupby('PATIENT')['READMITTED_WITHIN_30_DAYS'].max().mean()
+print(f"Readmission rate: {readmission_rate:.2%}")
+
+
+```
+
+Note that the readmission rate can be calculated at two levels: patient-level and encounter-level. The patient-level readmission rate considers whether a patient has been readmitted within 30 days of their last discharge, while the encounter-level readmission rate considers each individual encounter.
+
+```{python}
+# Patient-level readmission rate
+patient_readmission_rate = inpatients.groupby('PATIENT')['READMITTED_WITHIN_30_DAYS'].max().mean()
+
+# Encounter-level readmission rate
+encounter_readmission_rate = inpatients['READMITTED_WITHIN_30_DAYS'].mean()
+
+print(f"Patient-level readmission rate: {patient_readmission_rate:.2%}")
+print(f"Encounter-level readmission rate: {encounter_readmission_rate:.2%}")
+
+```
+
+Look at data of readmitted patients to see how many patients are readmitted within 30 days of their last discharge.
+
+```{python}
+# Filter only true readmissions
+readmitted_patients = inpatients[inpatients['READMITTED_WITHIN_30_DAYS']]
+
+print(readmitted_patients[['PATIENT', 'START', 'PREV_STOP', 'DAYS_SINCE_LAST_DISCHARGE', 'READMITTED_WITHIN_30_DAYS']])
+len(readmitted_patients['PATIENT'].unique())
+
+```
+
+### Group by month to count readmitted patients.
+
+```{python}
+# Ensure START is datetime
+inpatients['START'] = pd.to_datetime(inpatients['START'])
+
+# Extract year and month (e.g., '2025-06') for grouping
+inpatients['MONTH'] = inpatients['START'].dt.tz_localize(None).dt.to_period('M')
+
+# Filter for readmitted cases
+readmitted = inpatients[inpatients['READMITTED_WITHIN_30_DAYS'] == True]
+
+# Group by MONTH and count
+readmitted_per_month = readmitted.groupby('MONTH').size().reset_index(name='readmitted_count')
+
+print(readmitted_per_month)
+
+```

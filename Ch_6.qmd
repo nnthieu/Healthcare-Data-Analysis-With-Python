@@ -1,0 +1,1005 @@
+---
+title: "COVID-19 Reports"
+author: "Thieu Nguyen"
+format: html
+editor: visual
+---
+
+### Introduction
+
+Use the SyntheaMass data and rerun the code from this website to practice analyzing healthcare data using Python. I modified some code blocks to handle analysis involving several related tables in the healthcare database.
+
+In this post, we will learn how to:
+
+-   Define specific groups of patients, such as those who contracted COVID-19, were hospitalized, admitted to the ICU, placed on ventilators, and more
+
+-   Calculate age, age at death, time points of COVID-19 events, symptom timelines, and hospital stay lengths
+
+-   Aggregate metrics such as counts, means, and sums of symptoms and COVID-19 outcomes
+
+-   Explore lab values Plot key metrics
+
+-   Use Python functions to simplify code blocks in the report by calling external .py files such as analysis.py
+
+### Loading necessary python packages and Data
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import seaborn as sns
+import datetime
+```
+
+```{python }
+# Ensure all columns are shown
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+
+```
+
+Load the SyntheaMass data from the CSV files.
+
+```{python}
+# Load the data
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+devices = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/devices.csv")
+supplies = pd.read_csv('/Users/nnthieu/SyntheaData/SyntheaCovid19/supplies.csv')
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+```
+
+### Define COVID-19 Patients
+
+```{python}
+covid_patient_ids = conditions[conditions.CODE == 840539006].PATIENT.unique()
+inpatient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 1505002)].PATIENT.unique()
+isolation_ids = care_plans[(care_plans.CODE == 736376001) & (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+icu_patient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 305351004)].PATIENT.unique()
+vent_ids = procedures[procedures.CODE == 26763009].PATIENT.unique()
+deceased_ids = patients[patients.DEATHDATE.notna()].Id.unique()
+negative_covid_patient_ids = observations[(observations.CODE == '94531-1') & 
+                                    (observations.VALUE == 'Not detected (qualifier value)')].PATIENT.unique()
+completed_isolation_patients = care_plans[(care_plans.CODE == 736376001) & (care_plans.STOP.notna()) & 
+                                          (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+survivor_ids = np.union1d(completed_isolation_patients, negative_covid_patient_ids)
+
+# Filter patients who have COVID-19
+covid_patients = patients[patients.Id.isin(covid_patient_ids)]  # Correct column name to 'Id'
+len(covid_patient_ids)
+
+```
+
+The number of inpatient survivors
+
+```{python}
+np.intersect1d(inpatient_ids, survivor_ids).shape
+```
+
+The number of inpatient non-survivors
+
+```{python}
+np.intersect1d(inpatient_ids, deceased_ids).shape[0]
+```
+
+Mortality rate of covid-19 patients
+
+```{python}
+round((np.intersect1d(covid_patient_ids, deceased_ids).shape[0]/len(covid_patient_ids))* 100, 2)
+```
+
+Prepare a DataFrame with the number of patients in each category
+
+```{python}
+# 1. Find the earliest COVID-19 start date
+covid_start_date = pd.to_datetime(conditions[conditions['DESCRIPTION'] == 'COVID-19']['START'].min())
+
+# 2. Set the maximum allowed COVID-19 date (80 days later)
+covid_max_date = covid_start_date + pd.Timedelta(days=80)
+
+# Ensure the 'START' column is in datetime format
+conditions['START'] = pd.to_datetime(conditions['START'], errors='coerce')
+observations['DATE'] = pd.to_datetime(observations['DATE'], errors='coerce')
+
+# 3. Create a boolean mask for rows within the COVID-19 date range and for COVID-19 diagnosis
+covid_date_mask = (conditions['START'] >= covid_start_date) & (conditions['START'] <= covid_max_date)
+
+# 4. Filter `conditions` and `observations` based on the date range
+covid_cons = conditions[covid_date_mask]
+covid_obs = observations[
+    (observations['DATE'] >= covid_start_date) & (observations['DATE'] <= covid_max_date)
+]
+
+# 5. Display first few rows
+print(covid_cons.head(3))
+covid_cons.shape
+```
+
+### Health outcomes experienced by COVID-19 patients
+
+The following table shows different health outcomes that were experienced by COVID-19 patients during the course of the disease.
+
+File analysis.py is written and saved in a local working folder.
+
+write a function in analysis.py like import analysis analysis.outcome_table(inpatient_ids, survivor_ids, deceased_patients, covid_cons) to create a table as: outcome total percent of inpatient survivors percent survivors non survivors percent non survivors with outcome are values of covid_condition.DESCRIPTION containing (disorder)
+
+```{python}
+def outcome_table(inpatient_ids, survivor_ids, deceased_ids, covid_cons):
+    # Filter conditions containing "(disorder)" in the DESCRIPTION
+    disorder_conditions = covid_cons[
+        (covid_cons['DESCRIPTION'].str.contains(r'\(disorder\)', na=False)) &
+        (~covid_cons['DESCRIPTION'].str.contains(
+            r'pneumonia|hypoxemia|chronic|Hypertriglyceridemia|Hyperlipidemia|Hypercholesterolemia|Metabolic|osteoporosis|Alzheimer|Anemia|sinusitis|thrombosis|embolism|pharyngitis|bronchitis', case=False, na=False))
+        ]
+
+    # Initialize the result table
+    table_rows = []
+
+    for outcome in disorder_conditions['DESCRIPTION'].unique():
+        # Filter patients with the specific outcome
+        outcome_patients = disorder_conditions[disorder_conditions['DESCRIPTION']
+                                               == outcome]['PATIENT'].unique()
+
+        # Calculate metrics
+        total = len(outcome_patients)
+        inpatient = len(set(outcome_patients) & set(inpatient_ids))
+        survivors = len(set(outcome_patients) & set(survivor_ids))
+        non_survivors = len(set(outcome_patients) & set(deceased_ids))
+
+        percent_inpatient = (inpatient / len(inpatient_ids)) * \
+            100 if len(inpatient_ids) > 0 else 0
+        percent_survivors = (survivors / len(survivor_ids)) * \
+            100 if len(survivor_ids) > 0 else 0
+        percent_non_survivors = (
+            non_survivors / len(deceased_ids)) * 100 if len(deceased_ids) > 0 else 0
+
+        # Append row to the table
+        table_rows.append({
+            'outcome': outcome,
+            'total': total,
+            'percent of inpatient': round(percent_inpatient, 2),
+            'survivors': survivors,
+            'percent survivors': round(percent_survivors, 2),
+            'non survivors': non_survivors,
+            'percent non survivors': round(percent_non_survivors, 2)
+        })
+
+    # Convert to DataFrame
+    outcome_table = pd.DataFrame(table_rows).head(7)
+    outcome_table = outcome_table.sort_values(by='total', ascending=False)
+    outcome_table['outcome'] = outcome_table['outcome'].str.replace(
+    r'\(disorder\)', '', regex=True).str.strip()
+
+    return outcome_table
+
+outcome_table(inpatient_ids, survivor_ids, deceased_ids, covid_cons)
+
+```
+
+### Outcomes for all COVID-19 Patients
+
+This code builds a new DataFrame for the purposes of display. The DataFrame contains the percentages of patients that experience a particular outcome. Percentages are then provided for only hospitalized patients, ICU admitted patients and ventilated patients.
+
+```{python}
+covid_conditions = conditions[conditions.CODE == 840539006]
+
+cp = covid_conditions.merge(patients, how='left', left_on='PATIENT', right_on='Id')
+isolation_ids = care_plans[(care_plans.CODE == 736376001) & (care_plans.REASONCODE == 840539006)].PATIENT
+cp['isolation'] = cp.Id.isin(isolation_ids)
+cp['admit'] = cp.Id.isin(inpatient_ids)
+cp['recovered'] = cp.Id.isin(survivor_ids)
+cp['death'] = cp.DEATHDATE.notna()
+icu_ids = encounters[encounters.CODE == 305351004].PATIENT
+cp['icu_admit'] = cp.Id.isin(icu_ids)
+vent_ids = procedures[procedures.CODE == 26763009].PATIENT
+cp['ventilated'] = cp.Id.isin(vent_ids)
+```
+
+```{python}
+# Recode the boolean columns from True/False to text to read easily
+hospitalized = (cp.admit == True)
+icu = (cp.icu_admit == True)
+vent = (cp.ventilated == True)
+covid_count = cp.Id.size
+row_filters = {'Home Isolation': (cp.isolation == True), 
+               'Hospital Admission': hospitalized, 
+               'ICU Admission': icu, 
+               'Ventilated': vent, 
+               'Recovered': (cp.recovered == True), 
+               'Death': (cp.death == True)}
+
+table_rows = []
+for category, row_filter in row_filters.items():
+    row = {'Outcome': category}
+    row['All Patients'] = round(cp[row_filter].Id.size / covid_count, 2)
+    row['Hospitalized'] = round(cp[row_filter & hospitalized].Id.size / hospitalized.value_counts()[True], 2)
+    row['ICU Admitted'] = round(cp[row_filter & icu].Id.size / icu.value_counts()[True], 2)
+    row['Ventilated'] = round(cp[row_filter & vent].Id.size / vent.value_counts()[True], 2)
+    table_rows.append(row)
+    
+pd.DataFrame.from_records(table_rows)
+```
+
+### Outcomes for ICU Admitted Patients
+
+Essentially a sub table from above, looking only at ICU patients.
+
+```{python}
+icu_only = cp[cp.icu_admit == True]
+vent = (icu_only.ventilated == True)
+covid_count = icu_only.Id.size
+row_filters = {'Ventilated': vent, 
+               'Recovered': (icu_only.recovered == True), 
+               'Death': (icu_only.death == True)}
+
+table_rows = []
+for category, row_filter in row_filters.items():
+    row = {'Outcome': category}
+    row['ICU Admitted'] = round(icu_only[row_filter].Id.size / covid_count, 2)
+    row['Ventilated'] = round(icu_only[row_filter & vent].Id.size / vent.value_counts()[True], 2)
+   
+    table_rows.append(row)
+    
+pd.DataFrame.from_records(table_rows)
+```
+
+Start to build a DataFrame that we can use to look at other conditions in relation to COVID-19
+
+```{python}
+covid_info = cp[['PATIENT', 'recovered', 'death', 'START', 'DEATHDATE', 'BIRTHDATE', 'GENDER', 'admit', 'icu_admit']]
+covid_info = covid_info.rename(columns={'START': 'covid_start'})
+covid_info.head(2)
+
+```
+
+Grab all of the conditions starting after January 20, 2020. This is a hack to get only conditions that are related to COVID-19. We will end up merging these with the COVID patients.
+
+```{python}
+covid_related_conditions = conditions[pd.to_datetime(conditions.START) > pd.to_datetime('2020-01-20')]
+```
+
+This DataFrame will contain all conditions for COVID-19 patients, where START can be compared to covid_start to see how long after the COVID-19 diagnosis something happened.
+
+```{python}
+covid_patient_conditions = covid_info.merge(covid_related_conditions, on='PATIENT')
+covid_patient_conditions.head(2)
+```
+
+### Lab values for COVID-19 patients
+
+The following code presents lab values taken for COVID-19 patients. Values are separated into survivors and non survivors. The first block of code selects lab values of interest from all observations in the simulation.
+
+```{python}
+lab_obs = observations[(observations.CODE == '48065-7') | (observations.CODE == '26881-3') | 
+                          (observations.CODE == '2276-4') | (observations.CODE == '89579-7') |
+                           (observations.CODE == '731-0') | (observations.CODE == '14804-9')
+                      ]
+lab_obs.head(3)
+```
+
+Select COVID-19 conditions out of all conditions in the simulation
+
+```{python}
+covid_conditions = conditions[conditions.CODE == 840539006]
+covid_patients = covid_conditions.merge(patients, how='left', left_on='PATIENT', right_on='Id')
+covid_patients['survivor'] = covid_patients.PATIENT.isin(survivor_ids)
+covid_patients = covid_patients[['START', 'PATIENT', 'survivor', 'CODE']]
+```
+
+Calculate attributes needed to support the plot. Also coerce all lab values into a numeric data type.
+
+```{python}
+covid_patients_obs = covid_patients.merge(lab_obs, on='PATIENT')
+covid_patients_obs['START'] = pd.to_datetime(covid_patients_obs.START)
+covid_patients_obs['DATE'] = pd.to_datetime(covid_patients_obs.DATE)
+covid_patients_obs['lab_days'] = covid_patients_obs.DATE - covid_patients_obs.START
+covid_patients_obs['days'] = covid_patients_obs.lab_days / np.timedelta64(1, 'D')
+covid_patients_obs['VALUE'] = pd.to_numeric(covid_patients_obs['VALUE'], errors='coerce')
+```
+
+```{python}
+loinc_to_display = {'CODE_y = 48065-7': 'D-dimer', 'CODE_y = 2276-4': 'Serum Ferritin',
+                    'CODE_y = 89579-7': 'High Sensitivity Cardiac Troponin I',
+                    'CODE_y = 26881-3': 'IL-6', 'CODE_y = 731-0': 'Lymphocytes',
+                    'CODE_y = 14804-9': 'Lactate dehydrogenase'}
+catplt = sns.catplot(x="days", y="VALUE", hue="survivor", kind="box", col='CODE_y', 
+            col_wrap=2, sharey=False, sharex=False, data=covid_patients_obs, palette=["C1", "C0"])
+
+# Set the title for the entire figure
+catplt.fig.suptitle("Labs Values of Covid-19 Patients", y=1.02)
+
+for axis in catplt.fig.axes:
+    axis.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+    axis.xaxis.set_major_locator(ticker.MultipleLocator(base=4))
+    axis.set_title(loinc_to_display[axis.get_title()])
+        
+plt.show()
+```
+
+Line plot
+
+```{python}
+loinc_to_display = {'CODE_y = 48065-7': 'D-dimer', 'CODE_y = 2276-4': 'Serum Ferritin',
+                    'CODE_y = 89579-7': 'High Sensitivity Cardiac Troponin I',
+                    'CODE_y = 26881-3': 'IL-6', 'CODE_y = 731-0': 'Lymphocytes',
+                    'CODE_y = 14804-9': 'Lactate dehydrogenase'}
+g = sns.FacetGrid(covid_patients_obs, col="CODE_y", col_wrap=2, sharey=False, height=3, aspect=2)
+g = g.map_dataframe(sns.lineplot, x="days", y="VALUE", marker=".", hue="survivor", palette=["C1", "C0"], alpha=0.5)
+g.fig.suptitle("Labs Values of Covid-19 Patients", y=1.02)
+
+for axis in g.axes.flat:
+    axis.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+    axis.xaxis.set_major_locator(ticker.MultipleLocator(base=4))
+    title = axis.get_title().replace("DESCRIPTION = ", "").strip()
+    if title in loinc_to_display:
+        axis.set_title(loinc_to_display[title])
+    else:
+        axis.set_title(title)  
+  
+plt.show()
+
+
+```
+
+Line plot with a different style
+
+```{python}
+loinc_to_display = {'CODE_y = 48065-7': 'D-dimer', 'CODE_y = 2276-4': 'Serum Ferritin',
+                    'CODE_y = 89579-7': 'High Sensitivity Cardiac Troponin I',
+                    'CODE_y = 26881-3': 'IL-6', 'CODE_y = 731-0': 'Lymphocytes',
+                    'CODE_y = 14804-9': 'Lactate dehydrogenase'}
+catplt = sns.catplot(x="days", y="VALUE", hue="survivor", kind="point", col='CODE_y', 
+            col_wrap=2, sharey=False, sharex=False, data=covid_patients_obs, palette=["C1", "C0"])
+
+
+# Set the title for the entire figure
+catplt.fig.suptitle("Labs Values of Covid-19 Patients", y=1.02)
+
+for axis in catplt.fig.axes:
+    axis.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+    axis.xaxis.set_major_locator(ticker.MultipleLocator(base=4))
+    axis.set_title(loinc_to_display[axis.title.get_text()])
+
+plt.show()
+```
+
+Set up a new DataFrame with boolean columns representing various outcomes, like admit, recovery or death
+
+First, create patient Ids for 'isolation', 'admitted', 'icu_admitted', 'ventilated', 'recovered' and 'death', then create related columns in the covid_patient_ids table.
+
+```{python}
+cp = covid_conditions.merge(patients, how='left', left_on='PATIENT', right_on='Id')
+isolation_ids = care_plans[(care_plans.CODE == 736376001) & (care_plans.REASONCODE == 840539006)].PATIENT
+
+cp['isolation'] = cp.Id.isin(isolation_ids)
+cp['admit'] = cp.Id.isin(inpatient_ids)
+cp['recovered'] = cp.Id.isin(survivor_ids)
+cp['death'] = cp.DEATHDATE.notna()
+icu_ids = encounters[encounters.CODE == 305351004].PATIENT
+cp['icu_admit'] = cp.Id.isin(icu_ids)
+vent_ids = procedures[procedures.CODE == 26763009].PATIENT
+cp['ventilated'] = cp.Id.isin(vent_ids)
+cp.head(2)
+
+```
+
+### Symptoms for all COVID-19 Patients
+
+Generates a DataFrame with percentages of co-occurring conditions
+
+```{python}
+icu_patient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 305351004)].PATIENT
+icu_patient_ids.shape
+
+```
+
+```{python}
+def symptom_table(inpatient_ids, survivor_ids, deceased_ids, covid_cons):
+    # Filter conditions containing "(disorder)" in the DESCRIPTION
+    disorder_conditions = covid_cons[
+        (covid_cons['DESCRIPTION'].str.contains(r'\(finding\)', na=False)) &
+        (~covid_cons['DESCRIPTION'].str.contains(
+            r'pneumonia|hypoxemia|chronic|Hypertriglyceridemia|Hyperlipidemia|Hypercholesterolemia|Metabolic|osteoporosis|Alzheimer|Anemia|sinusitis|thrombosis|embolism|pharyngitis|bronchitis', case=False, na=False))
+        ]
+
+    # Initialize the result table
+    table_rows = []
+
+    for outcome in disorder_conditions['DESCRIPTION'].unique():
+        # Filter patients with the specific outcome
+        outcome_patients = disorder_conditions[disorder_conditions['DESCRIPTION']
+                                               == outcome]['PATIENT'].unique()
+
+        # Calculate metrics
+        total = len(outcome_patients)
+        inpatient = len(set(outcome_patients) & set(inpatient_ids))
+        survivors = len(set(outcome_patients) & set(survivor_ids))
+        non_survivors = len(set(outcome_patients) & set(deceased_ids))
+
+        percent_inpatient = (inpatient / len(inpatient_ids)) * \
+            100 if len(inpatient_ids) > 0 else 0
+        percent_survivors = (survivors / len(survivor_ids)) * \
+            100 if len(survivor_ids) > 0 else 0
+        percent_non_survivors = (
+            non_survivors / len(deceased_ids)) * 100 if len(deceased_ids) > 0 else 0
+
+        # Append row to the table
+        table_rows.append({
+            'outcome': outcome,
+            'total': total,
+            'percent of inpatient': round(percent_inpatient, 2),
+            'survivors': survivors,
+            'percent survivors': round(percent_survivors, 2),
+            'non survivors': non_survivors,
+            'percent non survivors': round(percent_non_survivors, 2)
+        })
+
+    # Convert to DataFrame
+    outcome_table = pd.DataFrame(table_rows).head(10)
+    outcome_table = outcome_table.sort_values(by='total', ascending=False)
+    outcome_table['outcome'] = outcome_table['outcome'].str.replace(
+    r'\(finding\)', '', regex=True).str.strip()
+
+    return outcome_table
+
+symptom_table(inpatient_ids, survivor_ids, deceased_ids, covid_cons)
+
+```
+
+### Symptoms for ICU-admitted COVID-19 Patients
+
+```{python}
+covid_conditions = covid_cons
+icu_patient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 305351004)].PATIENT
+icu_patients = covid_conditions[covid_conditions.PATIENT.isin(icu_patient_ids)]
+len(icu_patient_ids)
+
+```
+
+```{python}
+def calculate_symptom_stats(icu_patient_ids, survivor_ids, deceased_ids, covid_conditions):
+    # Filter conditions for "(finding)" only
+    finding_conditions = covid_conditions[
+        covid_conditions['DESCRIPTION'].str.contains(r'\(finding\)', na=False)
+    ]
+    
+    # Ensure there are symptoms to process
+    if finding_conditions.empty:
+        print("No symptoms found with '(finding)' in the description.")
+        return pd.DataFrame(columns=[
+            'symptom', 'icu_count', 'percent_icu',
+            'survivor_count', 'percent_survivor',
+            'deceased_count', 'percent_deceased'
+        ])
+    
+    # Convert inputs to sets for faster lookup
+    icu_set = set(icu_patient_ids)
+    survivor_set = set(survivor_ids)
+    deceased_set = set(deceased_ids)
+
+    table_rows = []
+
+    for symptom in finding_conditions['DESCRIPTION'].unique():
+        # Get all patients with the symptom
+        symptom_patients = finding_conditions[
+            finding_conditions['DESCRIPTION'] == symptom
+        ]['PATIENT'].unique()
+
+        symptom_patients_set = set(symptom_patients)
+
+        # Intersections
+        icu_with_symptom = symptom_patients_set & icu_set
+        survivors_with_symptom = icu_with_symptom & survivor_set
+        deceased_with_symptom = icu_with_symptom & deceased_set
+
+        icu_count = len(icu_with_symptom)
+        survivor_count = len(survivors_with_symptom)
+        deceased_count = len(deceased_with_symptom)
+
+        # Safe percentage calculations
+        percent_icu = (icu_count / len(icu_patient_ids)) * 100 if len(icu_patient_ids) > 0 else 0
+        percent_survivor = (survivor_count / len(survivor_ids)) * 100 if len(survivor_ids) > 0 else 0
+        percent_deceased = (deceased_count / len(deceased_ids)) * 100 if len(deceased_ids) > 0 else 0
+
+        table_rows.append({
+            'symptom': symptom.replace('(finding)', '').strip(),
+            'icu_count': icu_count,
+            'percent_icu': round(percent_icu, 2),
+            'survivor_count': survivor_count,
+            'percent_survivor': round(percent_survivor, 2),
+            'deceased_count': deceased_count,
+            'percent_deceased': round(percent_deceased, 2)
+        })
+
+    # Create and sort the DataFrame
+    df = pd.DataFrame(table_rows)
+    if df.empty:
+        print("No matching symptoms found for ICU patients.")
+        return pd.DataFrame(columns=[
+            'symptom', 'icu_count', 'percent_icu',
+            'survivor_count', 'percent_survivor',
+            'deceased_count', 'percent_deceased'
+        ])
+    
+    df = df.sort_values(by='icu_count', ascending=False).head(10)
+
+    return df
+
+# Call the function
+calculate_symptom_stats(icu_patient_ids, survivor_ids, deceased_ids, covid_conditions)
+```
+
+Create a DataFrame with columns that show a condition's start and end in days relative to COVID-19 diagnosis. Also create a column that calculates the number of days between COVID-19 diagnosis and a person's death.
+
+```{python}
+covid_patient_conditions['start_days'] = (pd.to_datetime(covid_patient_conditions.START) - pd.to_datetime(covid_patient_conditions.covid_start)) / np.timedelta64(1, 'D')
+covid_patient_conditions['end_days'] = (pd.to_datetime(covid_patient_conditions.STOP) - pd.to_datetime(covid_patient_conditions.covid_start)) / np.timedelta64(1, 'D')
+covid_patient_conditions['death_days'] = (pd.to_datetime(covid_patient_conditions.DEATHDATE) - pd.to_datetime(covid_patient_conditions.covid_start)) / np.timedelta64(1, 'D')
+
+covid_patient_conditions = covid_patient_conditions[covid_patient_conditions['DESCRIPTION'].str.contains(r'\(finding\)', na=False)]
+covid_patient_conditions.head(2)
+
+```
+
+```{python}
+# Step 1 & 2: Filter and remove duplicate patient-condition pairs
+filtered = covid_patient_conditions[
+    (covid_patient_conditions['death'] == False) &
+    (covid_patient_conditions['icu_admit'] == True)
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+# Step 3: Group by condition and count unique patients
+df_survivor = filtered.groupby('DESCRIPTION') \
+    .agg(survivor_count=('PATIENT', 'nunique')) \
+    .reset_index()
+
+# Step 4: Add percentage column
+total_unique_patients = filtered['PATIENT'].nunique()
+df_survivor['survivor_percent'] = round((df_survivor['survivor_count'] / total_unique_patients) * 100, 2)
+
+# Step 5: Sort and take top 10
+df_survivor = df_survivor.sort_values(by='survivor_count', ascending=False).head(15)
+df_survivor
+
+```
+
+```{python}
+# Step 1 & 2: Filter and remove duplicate patient-condition pairs
+filtered = covid_patient_conditions[
+    (covid_patient_conditions['death'] == True) &
+    (covid_patient_conditions['icu_admit'] == True)
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+# Step 3: Group by condition and count unique patients
+df_death = filtered.groupby('DESCRIPTION') \
+    .agg(death_count=('PATIENT', 'nunique')) \
+    .reset_index()
+
+# Step 4: Add percentage column
+total_unique_patients = filtered['PATIENT'].nunique()
+df_death['death_percent'] = round((df_death['death_count'] / total_unique_patients) * 100, 2)
+
+# Step 5: Sort and take top 10
+df_death = df_death.sort_values(by='death_count', ascending=False).head(15)
+df_death
+```
+
+```{python}
+# Step 1 & 2: Filter and remove duplicate patient-condition pairs
+filtered = covid_patient_conditions[
+    (covid_patient_conditions['icu_admit'] == True)
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+# Step 3: Group by condition and count unique patients
+df_total = filtered.groupby('DESCRIPTION') \
+    .agg(total_count=('PATIENT', 'nunique')) \
+    .reset_index()
+
+# Step 4: Add percentage column
+total_unique_patients = filtered['PATIENT'].nunique()
+df_total['total_percent'] = round((df_total['total_count'] / total_unique_patients) * 100, 2)
+
+# Step 5: Sort and take top 10
+df_total = df_total.sort_values(by='total_count', ascending=False).head(15)
+df_total
+```
+
+```{python}
+# Merge df_total and df_survivor on 'DESCRIPTION'
+merged_df = df_total.merge(df_survivor, on='DESCRIPTION', how='left')
+
+# Merge the result with df_death on 'DESCRIPTION'
+merged_df = merged_df.merge(df_death, on='DESCRIPTION', how='left')
+merged_df['DESCRIPTION'] = merged_df['DESCRIPTION'].str.replace(
+        r'\(finding\)', '', regex=True).str.strip()
+# Display the merged DataFrame
+merged_df.head(10)
+
+```
+
+Combined table
+
+```{python}
+from functools import reduce
+
+# --- TOTAL ICU PATIENTS ---
+filtered_total = covid_patient_conditions[
+    covid_patient_conditions['icu_admit'] == True
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+df_total = (
+    filtered_total
+    .groupby('DESCRIPTION')
+    .agg(total_count=('PATIENT', 'nunique'))
+    .reset_index()
+)
+
+total_unique_patients = filtered_total['PATIENT'].nunique()
+df_total['total_percent'] = round((df_total['total_count'] / total_unique_patients) * 100, 2)
+
+# --- ICU SURVIVORS ---
+filtered_survivor = covid_patient_conditions[
+    (covid_patient_conditions['icu_admit'] == True) &
+    (covid_patient_conditions['death'] == False)
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+df_survivor = (
+    filtered_survivor
+    .groupby('DESCRIPTION')
+    .agg(survivor_count=('PATIENT', 'nunique'))
+    .reset_index()
+)
+
+survivor_unique_patients = filtered_survivor['PATIENT'].nunique()
+df_survivor['survivor_percent'] = round((df_survivor['survivor_count'] / survivor_unique_patients) * 100, 2)
+
+# --- ICU DEATHS ---
+filtered_death = covid_patient_conditions[
+    (covid_patient_conditions['icu_admit'] == True) &
+    (covid_patient_conditions['death'] == True)
+][['PATIENT', 'DESCRIPTION']].drop_duplicates()
+
+df_death = (
+    filtered_death
+    .groupby('DESCRIPTION')
+    .agg(death_count=('PATIENT', 'nunique'))
+    .reset_index()
+)
+
+death_unique_patients = filtered_death['PATIENT'].nunique()
+df_death['death_percent'] = round((df_death['death_count'] / death_unique_patients) * 100, 2)
+
+# --- MERGE ALL ---
+dfs = [df_total, df_survivor, df_death]
+df_combined = reduce(lambda left, right: pd.merge(left, right, on='DESCRIPTION', how='outer'), dfs)
+
+# Fill missing values with 0
+df_combined = df_combined.fillna(0)
+
+# Clean DESCRIPTION labels
+df_combined['DESCRIPTION'] = (
+    df_combined['DESCRIPTION']
+    .str.replace(r'\(finding\)', '', regex=True)
+    .str.strip()
+)
+
+# Sort and limit output
+df_combined = df_combined.sort_values(by='total_count', ascending=False).head(10)
+
+# Final result
+df_combined.head(10)
+
+
+```
+
+### Symptom timelines for hospitalized patients
+
+These plots show the progression of COVID-19 related complications in hospitalized patients. The bars represent the average start and end time for the particular item.
+
+```{python}
+covid_patient_conditions.head(2)
+```
+
+```{python}
+symptoms = ['Fever (finding)', 'Cough (finding)', 'Dyspnea (finding)']
+filtered = covid_patient_conditions[(covid_patient_conditions['DESCRIPTION'].isin(symptoms)) &
+    (covid_patient_conditions['icu_admit'] == True)]
+filtered.groupby('DESCRIPTION')['end_days'].mean().round(2)
+```
+
+```{python}
+# Create Boolean mask for "(finding)" and exclusion terms
+condition_mask = (
+    covid_patient_conditions['DESCRIPTION'].str.contains(r'\(finding\)', na=False) &
+    ~covid_patient_conditions['DESCRIPTION'].str.contains(
+        r'pneumonia|hypoxemia|chronic|Hypertriglyceridemia|Hyperlipidemia|Hypercholesterolemia|Metabolic|osteoporosis|Alzheimer|Anemia|sinusitis|thrombosis|embolism|pharyngitis|bronchitis',
+        case=False, na=False)
+)
+
+# Define function with additional filtering for specific descriptions
+def select_condition_averages(df, mask):
+    mask = mask.reindex(df.index, fill_value=False)
+    filtered_df = df[mask]
+    # Filter for specific conditions only
+    symptoms = ['Fever (finding)', 'Cough (finding)', 'Dyspnea (finding)']
+    filtered_df = filtered_df[filtered_df['DESCRIPTION'].isin(symptoms)]
+    
+    averages = filtered_df.groupby('DESCRIPTION').agg(
+        avg_start_days= ('start_days', 'mean'),
+        avg_end_days= ('end_days', 'mean'),
+        count=('PATIENT', 'size')
+    ).reset_index()
+    return averages
+
+# Apply function
+averages = select_condition_averages(covid_patient_conditions, condition_mask)
+
+# View result
+averages.head(3)
+```
+
+```{python}
+averages = select_condition_averages(
+    covid_patient_conditions[
+        (covid_patient_conditions['recovered'] == True) & 
+        (covid_patient_conditions['icu_admit'] == True)
+    ],
+    condition_mask
+)
+averages.head(3)
+```
+
+```{python}
+averages = select_condition_averages(covid_patient_conditions[(covid_patient_conditions['death'] == True) & (covid_patient_conditions['icu_admit'] == True )], condition_mask)
+averages.head(3)
+```
+
+```{python}
+# Deaths of icu patients
+np.intersect1d(icu_patient_ids, deceased_ids).shape[0]
+```
+
+Add an age column to the DataFrame for rows where the patient has died
+
+```{python}
+covid_info.loc[covid_info.death == True, 'age'] = (pd.to_datetime(covid_info.DEATHDATE) - pd.to_datetime(covid_info.BIRTHDATE)).dt.days / 365.25
+
+```
+
+Populate ages for survivors based on the current date
+
+```{python}
+covid_info.loc[covid_info.recovered == True, 'age'] = (datetime.datetime.now() - pd.to_datetime(covid_info.BIRTHDATE)).dt.days / 365.25
+
+```
+
+Create an age_range column that places individuals into 10 year age ranges, such as 0 - 10, 10 - 20, etc.
+
+```{python}
+bins = list(range(0, 120, 10))
+covid_info['age_range'] = pd.cut(covid_info.age, bins=bins)
+covid_info.head(3)
+
+```
+
+### Mortality by Age and Sex
+
+A plot of deaths grouped by age range and gender.
+
+```{python}
+# Mortality rate
+rate = (np.intersect1d(covid_patient_ids, deceased_ids).shape[0]/len(covid_patient_ids))* 100
+print(round(rate, 2),'% for all covid-19 patients')
+
+```
+
+```{python}
+chart = sns.catplot(x="age_range", kind="count", hue="GENDER", data=covid_info[covid_info.death == True])
+for axes in chart.axes.flat:
+    axes.tick_params(axis='x', rotation=90)
+    
+```
+
+A table view of the same information from above
+
+```{python}
+covid_info[covid_info.death==True].groupby(['age_range', 'GENDER'], observed=True).count()[['PATIENT']]
+```
+
+Another table view of the mortality data, this time just grouped by age range
+
+```{python}
+covid_info[covid_info.death == True].groupby(['age_range'], observed=True).count()[['PATIENT']]
+```
+
+### Supply use
+
+```{python}
+supplies.head(3)
+grouped_supplies = supplies.groupby(['DESCRIPTION', 'DATE']).sum()
+```
+
+```{python}
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Prepare data
+gs = grouped_supplies.reset_index()
+gs['DATE'] = pd.to_datetime(gs['DATE'], errors='coerce')  # Handle invalid dates safely
+
+# Create FacetGrid
+g = sns.FacetGrid(
+    data=gs,
+    col="DESCRIPTION",
+    col_wrap=3,
+    sharey=False,
+    height=3,
+    aspect=2
+)
+g.map_dataframe(sns.lineplot, x="DATE", y="QUANTITY", marker="o")
+
+# Format titles and x-axis
+for ax in g.axes.flat:
+    title = ax.get_title()
+
+    # Simplify and clean title
+    if 'glove' in title.lower():
+        ax.set_title('Gloves')
+    else:
+        cleaned_title = (
+            title.replace("DESCRIPTION = ", "")
+                 .replace(" (physical object)", "")
+                 .strip()
+        )
+        ax.set_title(cleaned_title)
+
+    # Rotate x-axis labels
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(90)
+
+plt.tight_layout()
+plt.show()
+
+
+```
+
+### Cumulative Case Count
+
+A table showing total supplies used over the entire simulation
+
+Build a DataFrame that has cumulative case counts over time
+
+```{python}
+case_counts = conditions[conditions.CODE == 840539006].groupby('START').count()[['PATIENT']]
+case_counts['total'] = case_counts['PATIENT'].cumsum()
+case_counts = case_counts.rename(columns={'PATIENT': 'daily'})
+case_counts = case_counts.reset_index()
+case_counts['START'] = pd.to_datetime(case_counts.START)
+```
+
+```{python}
+axes = sns.lineplot(x='START', y='total', data=case_counts)
+plt.xticks(rotation=90)
+plt.show()
+```
+
+### Hospital Day Stats
+
+For patients with COVID-19, calculate the average hospital length of stay as well as total hospital days for all COVID-19 patients. Provide the same information for ICU patients
+
+```{python}
+covid_hosp = covid_info[covid_info['admit'] == True].merge(encounters, on='PATIENT')
+covid_hosp = covid_hosp[covid_hosp['REASONCODE'] == 840539006]
+covid_hosp['START'] = pd.to_datetime(covid_hosp.START)
+covid_hosp['STOP'] = pd.to_datetime(covid_hosp.STOP)
+covid_hosp['days'] = (covid_hosp.STOP - covid_hosp.START) / np.timedelta64(1, 'D')
+covid_hosp = covid_hosp[['PATIENT', 'icu_admit', 'START', 'STOP', 'days']]
+covid_hosp = covid_hosp.rename(columns={'START': 'hospital_start', 'STOP': 'hospital_stop'})
+covid_hosp = covid_hosp.drop_duplicates(subset=['PATIENT', 'hospital_start', 'hospital_stop'])
+covid_hosp = covid_hosp.sort_values(by='hospital_start')
+covid_hosp = covid_hosp.reset_index(drop=True)
+covid_hosp.head(3)
+```
+
+```{python}
+# Group by hospital admission and ICU admission
+grouped_data = covid_hosp.groupby(['icu_admit']).agg(
+    mean_days=('days', 'mean'),
+    total_days=('days', 'sum'),
+    patient_count=('PATIENT', 'nunique')
+).reset_index()
+
+# Rename the columns for better readability
+grouped_data = grouped_data.rename(columns={
+    'icu_admit': 'Admission'
+})
+grouped_data['Admission'] = grouped_data['Admission'].map({False: 'Non-ICU Inpatients', True: 'ICU Admission'})
+
+# Calculate the total row
+total_row = {
+    'Admission': 'Total',
+    'mean_days': grouped_data['mean_days'].mean(),
+    'total_days': grouped_data['total_days'].sum(),
+    'patient_count': grouped_data['patient_count'].sum()
+}
+
+# Append the total row to the DataFrame using pd.concat
+grouped_total = pd.concat(
+    [grouped_data, pd.DataFrame([total_row])],
+    ignore_index=True
+)
+
+# Display the updated DataFrame
+grouped_total
+
+```
+
+### Device Usage
+
+Show the number of devices used to treat COVID-19 over time.
+
+```{python}
+device_codes = [448907002, 449071006, 36965003]
+grouped_dev = devices[devices.CODE.isin(device_codes)].groupby(['DESCRIPTION', 'START']).count()
+grouped_dev = grouped_dev.reset_index()
+grouped_dev['START'] = pd.to_datetime(grouped_dev.START)
+```
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Prepare data
+gd = grouped_dev.reset_index()
+gd['START'] = pd.to_datetime(gd['START'], errors='coerce')  # Ensure dates are valid
+
+# Create FacetGrid
+g = sns.FacetGrid(
+    data=gd,
+    col="DESCRIPTION",
+    col_wrap=3,
+    sharey=False,
+    height=3,
+    aspect=2
+)
+g.map_dataframe(sns.lineplot, x="START", y="PATIENT", marker="o")  # Use marker="o" instead of "."
+
+# Clean up axes titles and rotate tick labels
+for ax in g.axes.flat:
+    title = ax.get_title()
+    cleaned_title = title.replace("DESCRIPTION = ", "").replace(" (physical object)", "").strip()
+    ax.set_title(cleaned_title)
+
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(90)
+
+plt.tight_layout()
+plt.show()
+
+```
+
+### Medication Dispenses
+
+This table shows medications dispensed to patients with COVID-19 since January 20, 2020.
+
+```{python}
+covid_meds = medications[pd.to_datetime(medications.START) > pd.to_datetime('2020-01-20')]
+covid_meds = covid_info.merge(covid_meds, on='PATIENT')
+# Use only numeric columns for aggregation
+covid_meds.groupby(['DESCRIPTION'])[['DISPENSES']].sum().sort_values('DISPENSES', ascending=False).head(10)
+```
+
+### Conclusion
+
+In this project, I explored the Synthea COVID-19 dataset to analyze various health outcomes and symptoms experienced by COVID-19 patients. I focused on inpatients, ICU-admitted patients, and ventilated individuals, examining their conditions, treatments, and outcomes.
+
+I learned how to:
+
+extract data for specific analyses, such as filtering, merging, and recoding data based on fields like 'CODE', 'REASONCODE', and 'DESCRIPTION', for different groups of patients including inpatients, COVID patients, ICU-admitted, and ventilated individuals.

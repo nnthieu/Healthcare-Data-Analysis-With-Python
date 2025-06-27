@@ -1,0 +1,253 @@
+---
+title: "Extracting Medical Data"
+format: html
+editor: visual
+author: "Thieu Nguyen"
+---
+
+### Introduction
+
+Medical data is stored across multiple tables in a hospital database. In an EHR system like EPIC, there can be thousands of tables. Therefore, extracting the correct data we need can sometimes be challenging.
+
+For example, if I want to analyze COVID-19 data, I first need to identify where the relevant data is stored and in which tables. In the SyntheaMass database, I start with the **‘conditions’** table, where all diseases are defined with fields such as *code*, *description*, *start* (date), *stop* (date), *patient* (ID), and more.
+
+The skill to identify sources of specific data comes with training, time and experience working with hospital databases.
+
+### Loading the data
+
+Import necessary python packages
+
+```{python}
+import pandas as pd
+import numpy as np
+import datetime
+```
+
+Loading the database with multiple tables is quite simple in python.
+
+```{python}
+# Load the data
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+```
+
+### Covid patient IDs
+
+First, I have to identify code of the covid disease in the table '**conditions**'.
+
+```{python}
+print(conditions.columns)
+conditions.head()
+```
+
+In order to extract IDs for only covid19 patients I code like this:
+
+```{python}
+covid_patient_ids = conditions[conditions.CODE == 840539006].PATIENT.unique()
+print(covid_patient_ids.shape[0])
+covid_patient_ids[0:5]
+```
+
+I want to have data of the covid patients I code as:
+
+```{python}
+# Filter patients who have COVID-19
+covid_patients = patients[patients.Id.isin(covid_patient_ids)]  
+print(covid_patients.columns)
+print(covid_patients.shape[0])
+covid_patients.head()
+```
+
+There are 88,166 COVID-19 patients, including both those who were isolated at home and those who were hospitalized.
+
+### Covid inpatients
+
+To extract data for COVID-19 patients who were hospitalized due to the virus, I use the **‘encounters’** table. Specifically, I filter for records where the **encounter class** is *inpatient* (CODE = 1505002) and the **reason** is *COVID-19* (REASONCODE = 840539006).
+
+```{python}
+print(encounters.columns)
+encounters.head()
+```
+
+I code as follow:
+
+```{python}
+covid_inpatient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 1505002)].PATIENT.unique()
+
+covid_inpatients = patients[patients.Id.isin(covid_inpatient_ids)] 
+
+print(len(covid_inpatient_ids))
+print(covid_inpatients.columns)
+covid_inpatients.head()
+```
+
+There are 18,177 patients who are admitted to hospital for covid.
+
+### Covid ICU-admitted patients
+
+```{python}
+icu_patient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 305351004)].PATIENT.unique()
+len(icu_patient_ids)
+```
+
+Among covid inpatients, 3,677 patients were admitted to ICU.
+
+### Covid ventilated patients
+
+```{python}
+print(procedures.columns)
+procedures.head()
+```
+
+```{python}
+vent_ids = procedures[procedures.CODE == 26763009].PATIENT.unique()
+vent_covid_ids = np.intersect1d(vent_ids, covid_patient_ids)
+len(vent_covid_ids)
+```
+
+There are 2,914 covid patients who were ventilated.
+
+### Covid isolated patients
+
+Patients who are isolated at home for covid are identified in the table 'care_plans'
+
+```{python}
+isolation_ids = care_plans[(care_plans.CODE == 736376001) & (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+len(isolation_ids)
+```
+
+There are 70,536 covid patients isolated at their home.
+
+### Completed isolation patients
+
+```{python}
+completed_isolation_patients = care_plans[(care_plans.CODE == 736376001) & (care_plans.STOP.notna()) & (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+len(completed_isolation_patients)
+```
+
+There are 70,398 covid patients who completed their home isolation.
+
+### Negative covid patients
+
+I look at the table 'observations' for lab tests.
+
+```{python}
+print(observations.columns)
+observations.head()
+```
+
+Then filtering for negative covid patient Ids.
+
+```{python}
+
+negative_covid_patient_ids = observations[(observations.CODE == '94531-1') & (observations.VALUE == 'Not detected (qualifier value)')].PATIENT.unique()
+len(negative_covid_patient_ids)
+```
+
+There are 17,524 COVID-19 patients who were tested for the virus and received negative results.
+
+### Covid survivors
+
+```{python}
+survivor_ids = np.union1d(completed_isolation_patients, negative_covid_patient_ids)
+len(survivor_ids)
+
+```
+
+There are 87,485 covid patients who survived the virus
+
+### Covid deaths
+
+```{python}
+deceased_ids = patients[patients.DEATHDATE.notna()].Id.unique()
+covid_deceased_ids = np.intersect1d(deceased_ids, covid_inpatient_ids)
+len(covid_deceased_ids)
+```
+
+There are 3,548 covid patients who died.
+
+### Lab values for COVID-19 patients
+
+I find labs values in the table '**observations'**
+
+```         
+LOINC codes = 'CODE = 48065-7': 'D-dimer', 
+              'CODE = 2276-4': 'Serum Ferritin',
+              'CODE = 89579-7': 'High Sensitivity Cardiac Troponin I',
+              'CODE = 26881-3': 'IL-6', 'CODE = 731-0': 'Lymphocytes',
+              'CODE = 14804-9': 'Lactate dehydrogenase'
+```
+
+```{python}
+lab_obs = observations[
+    (observations.CODE == '48065-7') | 
+    (observations.CODE == '26881-3') | 
+    (observations.CODE == '2276-4') | 
+    (observations.CODE == '89579-7') |
+    (observations.CODE == '731-0') | 
+    (observations.CODE == '14804-9')
+]
+
+print(lab_obs.columns)
+lab_obs.head()
+
+```
+
+### **Medication dispenses**
+
+The earliest date of covid is '2020-01-20'
+
+```{python}
+covid_meds = medications[pd.to_datetime(medications.START) > pd.to_datetime('2020-01-20')]
+covid_meds = covid_meds[covid_meds['PATIENT'].isin(covid_patient_ids)]
+print(covid_meds.columns)
+covid_meds.head()
+```
+
+### Combined covid patient data
+
+```{python}
+covid_cond = conditions[conditions.CODE == 840539006].copy()
+covid_cond['covid_date'] = covid_cond['START']
+covid_conditions = conditions[conditions['PATIENT'].isin(covid_patient_ids)].copy()
+covid_conditions = covid_conditions.merge(covid_cond[['PATIENT', 'covid_date']], on='PATIENT', how='left')
+covid_conditions.head()
+
+```
+
+```{python}
+cp = covid_conditions.merge(patients, how='left', left_on='PATIENT', right_on='Id')
+print(cp.columns)
+cp.head()
+```
+
+```{python}
+cp['isolation'] = cp.Id.isin(isolation_ids)
+cp['admit'] = cp.Id.isin(covid_inpatient_ids)
+cp['recovered'] = cp.Id.isin(survivor_ids)
+cp['death'] = cp.DEATHDATE.notna()
+cp['icu_admit'] = cp.Id.isin(icu_patient_ids)
+cp['ventilated'] = cp.Id.isin(vent_covid_ids)
+print(cp.columns)
+cp.head()
+
+```
+
+The condensed dataset
+
+```{python}
+covid_info = cp[['PATIENT', 'recovered', 'death', 'covid_date', 'DEATHDATE', 'BIRTHDATE', 'GENDER', 'admit', 'icu_admit']]
+print(covid_info.columns)
+covid_info.head()
+```
+
+### Conclusion
+
+The most important thing is to know where the data we need is stored and which tables contain it. We use fields like **CODE**, **DESCRIPTION**, and **REASONCODE** to identify the relevant information. Then, we filter and join these tables to create the datasets we want.
+
+Extracting exact medical data from a hospital database can sometimes be challenging. No one is immune to making mistakes when working with healthcare data. Therefore, it’s important to double-check codes and results multiple times while performing data-related tasks.

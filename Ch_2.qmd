@@ -1,0 +1,303 @@
+---
+title: "Creating Data Aggregation Tables"
+format: html
+editor: visual
+author: "Thieu Nguyen"
+---
+
+### Introduction
+
+Creating aggregated tables is a common task in data analysis. In this chapter, I demonstrate how to build aggregation tables across groups of patients. To prepare the data for further analysis involving both categorical and continuous variables, I use various tools to combine, join, and restructure the data.
+
+Functions such as `groupby()` and `agg()`—with methods like `count()`, `sum()`, `mean()`, and `std()`—are commonly used to generate these summary tables.
+
+### Loading Data
+
+Loading the necessary Python packages:
+
+```{python}
+import pandas as pd
+import numpy as np
+import datetime as dt
+
+```
+
+```{python}
+# Ensure all columns are shown
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+```
+
+Loading csv data
+
+```{python}
+# Load the data
+conditions = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/conditions.csv")
+patients = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/patients.csv")
+care_plans = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/careplans.csv")
+observations = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/observations.csv")
+encounters = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/encounters.csv")
+procedures = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/procedures.csv")
+medications = pd.read_csv("/Users/nnthieu/SyntheaData/SyntheaCovid19/medications.csv")
+```
+
+### Outcomes - Data aggregation and group operations (counts and percents) for categorical data
+
+I want to calculate both the counts and percentages of COVID-related outcomes among different patient groups, specifically:
+
+-   Inpatients
+
+-   Survivors
+
+-   Non-survivors
+
+This analysis will help understand how outcomes vary across these categories and can be used to support further epidemiological insights or health system planning.
+
+Define covid patients
+
+```{python}
+covid_patient_ids = conditions[conditions.CODE == 840539006].PATIENT.unique()
+covid_conditions = conditions[conditions.PATIENT.isin(covid_patient_ids)]
+print(covid_conditions.columns)
+covid_conditions.head()
+
+```
+
+Outcomes
+
+```{python}
+covid_conditions['DESCRIPTION'].value_counts().head(10)
+
+```
+
+The keywords for identifying COVID-related outcomes are collected from `conditions['DESCRIPTION'].values` that contain "(disorder)" and related features.
+
+Define `covid_date` as the earliest date each patient was diagnosed with COVID. This is important for analyses involving subsequent time points.
+
+```{python}
+
+# Filter COVID-19 rows
+covid_conds = conditions[conditions['DESCRIPTION'] == 'COVID-19'].copy()
+
+# Convert START to datetime
+covid_conds['START'] = pd.to_datetime(covid_conditions['START'])
+
+# Group by PATIENT and get the earliest COVID date
+covid_dates = covid_conds.groupby('PATIENT')['START'].min().reset_index()
+covid_dates.rename(columns={'START': 'covid_date'}, inplace=True)
+
+# Merge back to the original conditions table
+covid_conditions = conditions.merge(covid_dates, on='PATIENT', how='left')
+
+# Preview result
+covid_conditions.head()
+
+```
+
+Define specific patient groups
+
+```{python}
+
+# inpatients
+inpatient_ids = encounters[(encounters.REASONCODE == 840539006) & (encounters.CODE == 1505002)].PATIENT.unique()
+
+completed_isolation_patients = care_plans[(care_plans.CODE == 736376001) & (care_plans.STOP.notna()) & (care_plans.REASONCODE == 840539006)].PATIENT.unique()
+
+negative_covid_patient_ids = observations[(observations.CODE == '94531-1') & (observations.VALUE == 'Not detected (qualifier value)')].PATIENT.unique()
+
+# survivors
+survivor_ids = np.union1d(completed_isolation_patients, negative_covid_patient_ids)
+
+# deceased patients
+deceased_ids = patients[
+    patients['Id'].isin(covid_patient_ids) & patients['DEATHDATE'].notna()
+]['Id'].unique()
+
+```
+
+Further filter covid-related outcomes
+
+```{python}
+dis_cons = covid_conditions[
+        (covid_conditions['DESCRIPTION'].str.contains(r'\(disorder\)', na=False)) &
+        (~covid_conditions['DESCRIPTION'].str.contains(
+            r'pneumonia|hypoxemia|chronic|Hypertriglyceridemia|Hyperlipidemia|Hypercholesterolemia|Metabolic|osteoporosis|Alzheimer|Anemia|sinusitis|thrombosis|embolism|pharyngitis|bronchitis', case=False, na=False))
+        ].copy() 
+
+dis_cons['inpatient'] = dis_cons.PATIENT.isin(inpatient_ids)
+dis_cons['survivor'] = dis_cons.PATIENT.isin(survivor_ids)
+dis_cons['death'] = dis_cons.PATIENT.isin(deceased_ids)
+dis_cons.head()
+
+```
+
+Group by 'DESCRIPTION' for outcomes and count patients using an aggregation function to create the outcomes table
+
+```{python}
+# Add non_survivor column
+dis_cons['non_survivor'] = dis_cons['death'] & (~dis_cons['survivor'])
+
+# Total patients per group
+total_inpatients = len(inpatient_ids)
+total_survivors = dis_cons[dis_cons['survivor']]['PATIENT'].nunique()
+total_non_survivors = dis_cons[dis_cons['non_survivor']]['PATIENT'].nunique()
+
+# Group by outcome and count patients per group
+summary_df = dis_cons.groupby('DESCRIPTION').agg(
+    total=('PATIENT', 'nunique'),
+    inpatient=('inpatient', 'sum'),
+    survivors=('survivor', 'sum'),
+    non_survivors=('non_survivor', 'sum')
+).reset_index()
+
+# Calculate percentages using group totals
+summary_df['percent of inpatient'] = round(summary_df['inpatient'] / total_inpatients * 100, 2)
+summary_df['percent survivors'] = round(summary_df['survivors'] / total_survivors * 100, 2)
+summary_df['percent non survivors'] = round(summary_df['non_survivors'] / total_non_survivors * 100, 2)
+
+# Rename for clarity
+summary_df.rename(columns={'DESCRIPTION': 'outcome'}, inplace=True)
+
+# Sort by inpatient count or total
+summary_df = summary_df.sort_values(by='inpatient', ascending=False)
+
+# Final columns
+summary_df = summary_df[[
+    'outcome', 'total', 'percent of inpatient',
+    'survivors', 'percent survivors',
+    'non_survivors', 'percent non survivors'
+]]
+
+# Show result
+summary_df.sort_values(by='percent non survivors', ascending=False).head(7)
+
+```
+
+Use the groupby() and sum() to create counts and percents table
+
+```{python}
+# Calculate total unique patients per category
+total_inpatients = len(inpatient_ids)
+total_survivors = dis_cons[dis_cons['survivor'] == True]['PATIENT'].nunique()
+total_non_survivors = dis_cons[dis_cons['death'] == True]['PATIENT'].nunique()  
+
+# Group inpatient counts
+df1 = dis_cons.groupby('DESCRIPTION')['inpatient'].sum().reset_index()
+df1['percent_inpatient'] = round(df1['inpatient'] / total_inpatients * 100, 2)
+
+# Group survivor counts
+df2 = dis_cons.groupby('DESCRIPTION')['survivor'].sum().reset_index()
+df2['percent_survivor'] = round(df2['survivor'] / total_survivors * 100, 2)
+
+# Group death counts
+df3 = dis_cons.groupby('DESCRIPTION')['death'].sum().reset_index()
+df3['percent_non_survivor'] = round(df3['death'] / total_non_survivors * 100, 2)
+
+# Merge all on DESCRIPTION
+output_df = df1.merge(df2, on='DESCRIPTION').merge(df3, on='DESCRIPTION')
+
+# Optional sorting by inpatient count
+output_df = output_df.sort_values(by='percent_non_survivor', ascending=False)
+
+# Display top 10
+output_df.head(7)
+
+
+```
+
+### Labs values - Aggregation for continuous data
+
+```{python}
+# Filter observations by specific CODE values
+lab_obs = observations[
+    observations['CODE'].isin(['48065-7', '26881-3', '2276-4', '89579-7', '731-0', '14804-9'])
+]
+
+# Further filter by COVID patient IDs
+lab_obs = lab_obs[lab_obs['PATIENT'].isin(covid_patient_ids)]
+
+# Ensure the DATE column is in datetime format
+lab_obs['DATE'] = pd.to_datetime(lab_obs['DATE'], errors='coerce')
+
+# Filter rows after 2020-01-20 for covid-related data
+lab_obs = lab_obs[lab_obs['DATE'] > pd.to_datetime('2020-01-20')]
+
+lab_obs['survivor'] = lab_obs.PATIENT.isin(survivor_ids)
+
+# Preview first 3 rows
+lab_obs.head(3)
+
+```
+
+Compare labs values between groups of patients who are 'survivor' or 'non-survivor'
+
+```{python}
+# transform value to numeric
+lab_obs['VALUE'] = pd.to_numeric(lab_obs['VALUE'], errors='coerce')
+
+# aggregating data
+lab_obs.pivot_table(index="DESCRIPTION", columns="survivor", values="VALUE", aggfunc="mean").round(2)
+
+```
+
+Compare labs values between time points as 'baseline' and 'week_1' later
+
+```{python}
+lab_obs = lab_obs.copy().merge(covid_dates, on = 'PATIENT')
+lab_obs['days'] = (pd.to_datetime(lab_obs['DATE']) - pd.to_datetime(lab_obs['covid_date'])).dt.days
+lab_obs.head()
+```
+
+Take a look at 'days' column
+
+```{python}
+lab_obs['days'].describe()
+```
+
+Compare labs values between time points as 'baseline' and 'week_1' later
+
+```{python}
+# Assign Timepoints 
+def assign_timepoint(days):
+    if days == 0:
+        return 'baseline'
+    elif 6 <= days <= 8:
+        return 'week_1'
+    else:
+        return None
+
+lab_obs['TIMEPOINT'] = lab_obs['days'].apply(assign_timepoint)
+lab_obs = lab_obs.dropna(subset=['TIMEPOINT'])
+lab_obs.head()
+
+```
+
+```{python}
+# aggregating data
+lab_obs.pivot_table(index="DESCRIPTION", columns=["survivor", "TIMEPOINT"], values="VALUE", aggfunc="mean").round(2)
+
+```
+
+Ferritin \[Mass/volume\] in Serum or Plasma, Fibrin D-dimer FEU \[Mass/volume\] in Platelet and Troponin I. cardiac \[Mass/volume\] in Serum increase significantly at one week later among covid patients who died.
+
+Table of N, means and SD between time points
+
+```{python}
+# Aggregate Statistics 
+summary = lab_obs.groupby(['DESCRIPTION','TIMEPOINT'])['VALUE'].agg(
+    N='count',
+    mean='mean',
+    sd='std'
+).reset_index()
+
+# Output Results 
+order = ['baseline', 'week_1']
+summary = summary.set_index('TIMEPOINT').loc[order].reset_index().round(2)
+print(summary)
+```
+
+### Conclusion
+
+In this chapter, I explore tools for combining, joining, and restructuring data, along with functions for generating summary tables—such as `pivot_table` and techniques for recoding datetime variables.
+
+I demonstrate data aggregation for both categorical and continuous variables, using functions like  `groupby()`,  `agg()`,  `count()`,  `sum()`,  `mean()` and  `std()` to create meaningful summary tables.

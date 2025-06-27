@@ -1,0 +1,28 @@
+---
+title: "Introduction to SyntheaMass Database"
+---
+
+
+To become a healthcare data analyst, it is essential to be proficient in data tools such as SQL, R, Python and Power BI or others, in order to process data tables, generate charts, and report insights.
+
+However, the most important skill for a healthcare data analyst is understanding the structure of hospital databases—knowing what information to look for and which tables contain it.
+
+Hospital databases typically consist of many tables, such as patients, encounters, medications, immunizations, observations, and more.
+
+It is crucial to understand each table’s rows and columns, data types, the kind of clinical information stored, and how tables are related to each other through indexes (or keys).
+
+From there, you must work backward from the information you need—identify which tables hold the relevant data, determine how they are linked, and apply the correct filters to extract the necessary results or figures. The required information is often not stored in a single table but distributed across multiple tables, so it’s important to locate, extract, and join the data correctly.
+
+EHR systems like EPIC contain thousands of tables, each connected by indexes. Retrieving data from such systems can be challenging and requires a deep understanding of the database structure and query logic.
+
+It’s neither quick nor easy to gain proficiency in searching hospital databases. This expertise comes with time and experience working directly with these complex systems.
+
+Anyone learning healthcare data analysis needs access to a good database to practice data-related tasks. However, because healthcare data is protected by law, it's nearly impossible to obtain real patient data for practice. I spent a long time searching for quality data sources, and I finally found a great one.
+
+The database is available at [**https://synthea.mitre.org/downloads**](https://synthea.mitre.org/downloads?fbclid=IwZXh0bgNhZW0CMTAAAR50yoBHwWNTLRF0OxWNF2UcUQCD0issA_k6lFxQzwyZtUIwfIM5EHG1jqCraw_aem_AA6oF9i3sg4woOQ4czHkUg), and it contains synthetic data that closely resembles real-life clinical care information. It includes 17 tables for encounters, patients, providers, claims, claim transactions, medications, imaging studies, observations, immunizations, allergies, supplies, payers, and more. The ‘encounters’ , a fact table, has 17 columns and 53,346 rows. The ‘encounters’ table with COVID-19 information has as many as 3,118,440 rows. The data simulating a real hospital database contains errors such as null values, incorrect dates, or wrong data types—just like what we often encounter in actual hospital databases. This gives us the opportunity to perform data validation and cleaning before conducting analysis. I really like this.
+
+The data available in SyntheticMass is produced using Synthea, an open-source patient population simulator developed by The MITRE Corporation. This dataset is freely accessible and not subject to privacy, security, or cost limitations. It can be utilized without restriction for diverse secondary purposes across academic, research, industry, and governmental sectors.
+
+Although this synthetic database is relatively small and lacks the level of detail found in even small hospital systems, it does simulate the structure and relationships of real hospital databases. With these tables, I can perform data analysis on key healthcare KPIs to measure hospital performance, such as the number of patients, providers, visits per provider, immunizations, allergies, readmission rates, and financial transactions.
+
+While this database doesn't cover every aspect of hospital operations, it is currently one of the best resources available for those learning healthcare data analysis.

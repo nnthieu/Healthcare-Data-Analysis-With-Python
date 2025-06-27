@@ -1,0 +1,27 @@
+# Preface
+
+In the context of digital transformation, healthcare is rapidly evolving into a data-intensive domain. From electronic health records to patient monitoring systems, the volume and complexity of medical data have increased significantly. This transition highlights the importance of professionals capable of understanding, analyzing, and interpreting health data to enhance patient outcomes, optimize hospital operations, and inform policy development.
+
+This publication was inspired by the fundamental question: how can we provide students, researchers, and practitioners with a safe and realistic environment to develop healthcare data analysis skills? The solution is embodied in Synthea, an open-source, simulated health database created by the MITRE Corporation. Synthea offers high-quality synthetic patient data that accurately reflects the structure and content of real-world healthcare records, while safeguarding patient privacy.
+
+Throughout this material, the goal is to guide you through practical exercises and real-world scenarios using Synthea’s synthetic data. Topics covered include:
+
+-   Mapping patient care pathways
+-   Analyzing clinical outcomes
+-   Working with structured electronic health records (EHRs)
+-   Creating visualizations to identify health trends
+-   Applying statistical and machine learning techniques
+
+Python will be used to extract, analyze and visualize data in this book.
+
+Whether you are a student seeking to develop your portfolio, a clinician interested in data analytics, or a data analyst transitioning into healthcare, this resource is designed for you. A basic understanding of data analysis tools (such as R or Python) is recommended, but foundational concepts related to healthcare data will be introduced as needed.
+
+By the conclusion of this program, you will have gained practical skills and confidence in analyzing complex health data, positioning you to make meaningful contributions to the future of healthcare.
+
+Thank you for engaging with this initiative to make health data analysis accessible, ethical, and impactful.
+
+Thieu Nguyen
+
+(ngngthieu\@gmailcom)
+
+![Cover image](cover.jpg)

@@ -1,0 +1,33 @@
+project:
+  type: book
+
+book:
+  title: "Healthcare Data Analysis With Python"
+  author: "Thieu Nguyen"
+  date: "5/29/2025"
+  chapters:
+    - index.qmd
+    - intro.qmd
+    - Ch_1.qmd
+    - Ch_2.qmd
+    - Ch_3.qmd
+    - Ch_4.qmd
+    - Ch_5.qmd
+    - Ch_6.qmd
+    - Ch_7.qmd
+    - Ch_8.qmd
+    - summary.qmd
+    - references.qmd
+
+bibliography: references.bib
+
+html:
+    theme:
+      - cosmo
+      - brand
+    css: styles.css
+    
+
+
+editor: visual
+
