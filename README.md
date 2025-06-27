@@ -1,2 +1,3 @@
 # Healthcare-Data-Analysis-With-Python
-My ebook to share hand-on experinces using Python for analyzing data in healthcare.
+
+My first ebook sharing hands-on experience in analyzing healthcare data using Python.
